@@ -1,7 +1,7 @@
 pkgname=ps4-homebrew-mesa
 pkgver=26.2.0
-pkgrel=1
-pkgdesc="Open-source Vulkan driver for the PS4 (RADV)"
+pkgrel=6
+pkgdesc="Open-source Vulkan driver for the PS4 (RADV, VK_KHR_display on VideoOut)"
 url="https://www.mesa3d.org/"
 arch=('any')
 license=("MIT AND BSD-3-Clause AND SGI-B-2.0")
@@ -41,7 +41,13 @@ source=("https://mesa.freedesktop.org/archive/mesa-${pkgver}.tar.xz"
 	"0029-radv-a-PS4-winsys-on-Gnm.patch"
 	"0030-amd-addrlib-no-AVX2-swizzlers-in-the-PS4-console-bui.patch"
 	"0031-util-the-PS4-s-FreeBSD-9-kernel-and-the-PS5-s-condit.patch"
-	"0032-radv-ps4-the-shader-cache-in-the-title-s-folder.patch")
+	"0032-radv-ps4-the-shader-cache-in-the-title-s-folder.patch"
+	"0033-radv-ps4-host-pointers-in-direct-memory-mapped-for-t.patch"
+	"0034-wsi-VK_KHR_display-on-the-PS4-s-VideoOut.patch"
+	"0035-radv-ps4-reserve-the-32-bit-window-without-a-4-GiB-a.patch"
+	"0036-radv-ps4-a-shader-cache-under-data-and-a-submission-.patch"
+	"0037-radv-ps4-a-submission-progress-trace.patch"
+	"0038-radv-ps4-no-CMASK-fast-clear-for-a-console-display-s.patch")
 
 sha256sums=('SKIP'
 	    'cf84da22579c81fad237217fc4a98ddf68b2405b153e270ab8a0f1cf74e9b2b6'
@@ -75,7 +81,13 @@ sha256sums=('SKIP'
 	    '1ca88b8b159c142408130167183f5b81bfc7328b3f94b9e0b9b9fbd95cdb8b00'
 	    '4ce86c145d034c300014fb72ce38574d9ef0b04f9ebe8d1cc7e103983b1876d7'
 	    '494a78298d2cf6a43f81ff4ef5ac81db79fed4d3a6e13e96c48e27a43de8d36c'
-	    'afcb7b07c577cb9bcc14423ae20406c8fb8e06c8425ce4b582618b40a0691b21')
+	    'afcb7b07c577cb9bcc14423ae20406c8fb8e06c8425ce4b582618b40a0691b21'
+	    '64abc0f59e07f1f42fcb02910c07a1bc6a08313dea9f0132179ca0b04310242a'
+	    'a6341d07bbc437272d4a4de599d8f0213bb25b0dc0ecfdeac6999afef5963874'
+	    'cb3f46085d37c7a73c7da89d6baffebc03b6aecca975b0cff4ec0a1b2d9e2976'
+	    'c605577733623e0012b606ec88b00bef7703cbe3024004e50f26c4a89a4914eb'
+	    '97e29b953ad9cc8f5683a4599f44f00ca0d7e7df3cfc96bc9b00c42d467f77ef'
+	    'ed57b13b3b504808f4b3d77e7168c36965276bfe7bac6abfc533e320b1a18d40')
 
 prepare() {
     if [ -z "${PS4_HOMEBREW_SDK}" ]; then
@@ -99,9 +111,9 @@ build() {
     build_id=$(cat <(echo "${pkgver}") "${srcdir}"/[0-9][0-9][0-9][0-9]-*.patch \
 		   | sha1sum | cut -d' ' -f1)
 
-    # Vulkan only, without a WSI, until the VideoOut WSI (the PS5's 0011)
-    # and zink/EGL are brought to the PS4. Unlike the PS5's, this build
-    # needs no host mesa_clc: nothing in it is written in OpenCL C.
+    # Vulkan, presenting with VK_KHR_display on VideoOut, until zink and
+    # EGL are brought to the PS4. Unlike the PS5's, this build needs no
+    # host mesa_clc: nothing in it is written in OpenCL C.
     ${MESON} setup builddir \
 	     -Ddefault_library=shared \
 	     -Dbuildtype=debugoptimized \

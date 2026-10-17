@@ -1,0 +1,112 @@
+From c4735f509373945d492b159d48252f612f271705 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 12:26:47 +0000
+Subject: [PATCH] radv/ps4: a shader cache under /data, and a submission probe
+
+/app0 is the title's read-only PKG, where the shader cache could not be
+created (it disabled itself every launch). It goes under /data, which
+homebrew can write.
+
+RADV_PS4_PROBE submits one command buffer that only writes the completion
+marker with the end-of-pipe event -- no preamble, no rendering -- and
+reports whether the GPU reached it, to tell a submission or fence problem
+from one in what RADV renders. radv_ps4_completion_words is shared through
+the winsys header for it.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/vulkan/winsys/ps4/radv_ps4_cs.c       |  3 +--
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.c |  9 +++++---
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c   | 22 +++++++++++++++++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h   |  6 +++++
+ 4 files changed, 35 insertions(+), 5 deletions(-)
+
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c b/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c
+index e9cc563..7ba4800 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c
+@@ -317,9 +317,8 @@ radv_ps4_cs_annotate(struct ac_cmdbuf *cs, const char *marker)
+  * sequence number's low 32 bits -- the packet the amdgpu kernel's GFX7 fences
+  * are (gfx_v7_0_ring_emit_fence_gfx), and the one the gnm_submit sample waits
+  * on. */
+-#define RADV_PS4_COMPLETION_WORDS 6
+ 
+-static void
++void
+ radv_ps4_completion_words(uint32_t *words, uint64_t marker_address, uint32_t value)
+ {
+    words[0] = PKT3(PKT3_EVENT_WRITE_EOP, 4, 0);
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+index 14bbcc3..900de4f 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+@@ -194,9 +194,12 @@ radv_ps4_window_reserve(uint64_t bytes)
+ static bool
+ radv_ps4_platform_once(void)
+ {
+-   /* RADV's shader cache in the title's own folder, in the database form, as
+-    * on the PS5. A title may choose otherwise, as on Linux. */
+-   setenv("MESA_SHADER_CACHE_DIR", "/app0/radv-shader-cache", 0);
++   /* RADV's shader cache in the database form, as on the PS5. /app0 is the
++    * title's read-only PKG, so the cache goes under /data, which homebrew can
++    * write; a title may choose otherwise, as on Linux. If the directory
++    * cannot be made the cache disables itself and pipelines are recompiled
++    * each launch. */
++   setenv("MESA_SHADER_CACHE_DIR", "/data/radv-shader-cache", 0);
+    setenv("MESA_DISK_CACHE_DATABASE", "1", 0);
+ 
+    /* 32-bit pointers share their high word, so the window must not cross a
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index dfcc2b2..c200ebc 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -66,6 +66,28 @@ radv_ps4_queue_create(void)
+    simple_mtx_init(&queue->submit_lock, mtx_plain);
+    mtx_init(&queue->sync_lock, mtx_plain);
+    cnd_init(&queue->sync_cond);
++
++   /* RADV_PS4_PROBE submits one command buffer that only writes the marker
++    * with the completion EOP -- no preamble, no rendering -- and reports
++    * whether the GPU reached it. It isolates the submission and end-of-pipe
++    * fence from everything RADV renders: if the probe advances the marker but
++    * a frame hangs, the rendered stream or its state is at fault, not the
++    * submit path; if the probe hangs too, the submit or fence handshake is.
++    * The SDK's gnm_submit sample tests the same thing with hand-written PM4. */
++   if (getenv("RADV_PS4_PROBE")) {
++      uint32_t words[RADV_PS4_COMPLETION_WORDS];
++      radv_ps4_completion_words(words, (uint64_t)(uintptr_t)queue->marker, 1);
++      const int err = radv_ps4_submit(words, RADV_PS4_COMPLETION_WORDS, queue->marker, 1);
++      const uint64_t deadline = radv_ps4_now_ns() + UINT64_C(2) * 1000000000;
++      while (*queue->marker != 1 && radv_ps4_now_ns() < deadline)
++         radv_ps4_sleep_us(1000);
++      fprintf(stderr, "radv/ps4: probe: submit 0x%08x, marker at %p reached %u (want 1) -- the EOP fence %s\n",
++              (unsigned)err, (void *)queue->marker, *queue->marker,
++              *queue->marker == 1 ? "works" : "did NOT land (submit/fence handshake)");
++      *queue->marker = 0;
++      radv_ps4_cpu_flush((const void *)queue->marker, sizeof(*queue->marker));
++   }
++
+    radv_ps4_queue_instance = queue;
+ }
+ 
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
+index ab2165a..63f8502 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
+@@ -73,6 +73,12 @@ struct radv_ps4_queue *radv_ps4_queue_get(void);
+ /* The GPU's timestamp clock, read through the queue; 0 if it cannot be. */
+ uint64_t radv_ps4_read_gpu_clock(void);
+ 
++/* The completion packet the submit path ends every command buffer with: one
++ * EVENT_WRITE_EOP that writes value to marker_address once the GPU has run
++ * everything before it (radv_ps4_cs.c). */
++#define RADV_PS4_COMPLETION_WORDS 6
++void radv_ps4_completion_words(uint32_t *words, uint64_t marker_address, uint32_t value);
++
+ struct radv_ps4_winsys {
+    struct radeon_winsys base;
+    struct radeon_info info;
+-- 
+2.43.0
+

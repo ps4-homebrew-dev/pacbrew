@@ -1,0 +1,500 @@
+From 8b0777533860b2a7f4f774c43bf5303ec0a2bb52 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 11:29:20 +0000
+Subject: [PATCH 34/34] wsi: VK_KHR_display on the PS4's VideoOut
+
+The PS5's VideoOut WSI (wsi_common_videoout.c) presents on the PS4 too,
+with MESA_WSI_VIDEOOUT_PS4 selecting the PS4's calls:
+
+- one display and one 1920x1080 mode at 59.94 Hz, no high-frame-rate one;
+- five 16 MiB framebuffers of garlic direct memory, imported into the
+  device as host memory, B8G8R8A8 (VideoOut's A8R8G8B8);
+- registered with sceVideoOutRegisterBuffers once the first swapchain's
+  images are laid out in them, in VideoOut's tiled mode at the images'
+  pitch: RADV gives a GFX7 scanout image the 2D thin display tiling that
+  mode scans out, the layout freegnm computes for a display surface
+  (tile mode 10, pitch 1920, 1920x1088, 32 KiB aligned);
+- flipped with sceVideoOutSubmitFlip at a vblank, the shown flip read
+  from sceVideoOutGetFlipStatus, acquires waiting with
+  sceVideoOutWaitVblank, as on the PS5.
+
+The PS4 build links libSceVideoOut, and its host model runs the same
+swapchain logic with stand-ins for the calls.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ include/ps4_sce.h                    |  56 +++++++-
+ meson.build                          |   7 +-
+ src/amd/vulkan/radv_wsi.h            |   6 +-
+ src/vulkan/meson.build               |   3 +
+ src/vulkan/wsi/wsi_common_videoout.c | 207 +++++++++++++++++++++++++--
+ 5 files changed, 261 insertions(+), 18 deletions(-)
+
+diff --git a/include/ps4_sce.h b/include/ps4_sce.h
+index e39263a..abb7bfb 100644
+--- a/include/ps4_sce.h
++++ b/include/ps4_sce.h
+@@ -5,9 +5,9 @@
+  */
+ 
+ /* Declarations of the PlayStation 4 system functions RADV's PS4 winsys
+- * (src/amd/vulkan/winsys/ps4) calls. The PS4 homebrew SDK links them
+- * (libkernel and libSceGnmDriver stubs) but its headers do not declare them,
+- * so Mesa carries its own.
++ * (src/amd/vulkan/winsys/ps4) and the VideoOut WSI call. The PS4 homebrew SDK
++ * links them (libkernel, libSceGnmDriver and libSceVideoOut stubs) but its
++ * headers do not declare them, so Mesa carries its own.
+  *
+  * Signatures follow the public PS4 SDK's, as OpenOrbis declares them, and the
+  * forms the console accepted in the SDK's gnm_submit sample. Only built for
+@@ -79,6 +79,56 @@ int32_t sceGnmSubmitCommandBuffers(uint32_t count, void *dcb_addresses[], uint32
+  * call it regularly. */
+ int32_t sceGnmSubmitDone(void);
+ 
++/* ---------------------------------------------------------- libSceVideoOut */
++
++/* The display (src/vulkan/wsi/wsi_common_videoout.c), as OpenOrbis and the
++ * freegnm examples drive it: opened for the system user on the main bus,
++ * framebuffers registered with their format, tiling and pitch, and flipped at
++ * a vblank. */
++#define PS4_VIDEO_OUT_USER_SYSTEM 0xff
++#define PS4_VIDEO_OUT_BUS_MAIN 0
++/* B8G8R8A8 in memory. */
++#define PS4_VIDEO_OUT_PIXEL_FORMAT_A8R8G8B8_SRGB 0x80000000u
++/* Tiled: the GPU's 2D thin display tiling (GNM_TM_DISPLAY_2D_THIN). */
++#define PS4_VIDEO_OUT_TILING_MODE_TILE 0u
++#define PS4_VIDEO_OUT_ASPECT_RATIO_16_9 0u
++#define PS4_VIDEO_OUT_FLIP_VSYNC 1u
++
++struct ps4_video_out_buffer_attribute {
++   uint32_t pixel_format;
++   uint32_t tiling_mode;
++   uint32_t aspect_ratio;
++   uint32_t width;
++   uint32_t height;
++   uint32_t pitch_in_pixel;
++   uint64_t reserved[2];
++};
++
++struct ps4_video_out_flip_status {
++   uint64_t count;
++   uint64_t process_time;
++   uint64_t tsc;
++   /* The argument of the latest flip shown. */
++   int64_t flip_argument;
++   uint64_t reserved[2];
++   int32_t gpu_flips_pending;
++   int32_t flips_pending;
++   int32_t current_buffer;
++   uint32_t reserved1;
++};
++
++int32_t sceVideoOutOpen(int32_t user, int32_t bus, int32_t index, const void *parameter);
++int32_t sceVideoOutClose(int32_t handle);
++void sceVideoOutSetBufferAttribute(struct ps4_video_out_buffer_attribute *attribute, uint32_t pixel_format,
++                                   uint32_t tiling_mode, uint32_t aspect_ratio, uint32_t width, uint32_t height,
++                                   uint32_t pitch_in_pixel);
++int32_t sceVideoOutRegisterBuffers(int32_t handle, int32_t start, void *const *addresses, int32_t count,
++                                   const struct ps4_video_out_buffer_attribute *attribute);
++int32_t sceVideoOutSetFlipRate(int32_t handle, int32_t rate);
++int32_t sceVideoOutSubmitFlip(int32_t handle, int32_t buffer_index, uint32_t flip_mode, int64_t argument);
++int32_t sceVideoOutGetFlipStatus(int32_t handle, struct ps4_video_out_flip_status *status);
++int32_t sceVideoOutWaitVblank(int32_t handle);
++
+ #ifdef __cplusplus
+ }
+ #endif
+diff --git a/meson.build b/meson.build
+index 111596a..38a9a5f 100644
+--- a/meson.build
++++ b/meson.build
+@@ -350,8 +350,9 @@ if _vulkan_drivers.contains('amd') and get_option('radv-winsys') == 'ps4' and ho
+   system_has_kms_drm = false
+ endif
+ # Its one display is VideoOut (src/vulkan/wsi/wsi_common_videoout.c), in the
+-# host model's builds too, rather than a DRM connector.
+-with_wsi_videoout = _vulkan_drivers.contains('amd') and get_option('radv-winsys') == 'ps5'
++# host model's builds too, rather than a DRM connector: the PS5's and the
++# PS4's, whose VideoOut differs in its calls and its framebuffers.
++with_wsi_videoout = _vulkan_drivers.contains('amd') and ['ps5', 'ps4'].contains(get_option('radv-winsys'))
+ 
+ # This has to be below the freedreno_kmds check since that can change system_has_kms_drm
+ with_gallium_kmsro = with_gallium_drm or (system_has_kms_drm and with_gallium_zink)
+@@ -537,7 +538,7 @@ with_radv_ps5_console = with_radv_ps5 and host_machine.system() != 'linux'
+ # program too, so that its crt initializes them through libSceSysmodule.
+ ps5_sysmodule_libs = with_radv_ps5_console ? ['-lSceAgc', '-lSceAgcDriver', '-lSceVideoOut'] : []
+ with_radv_ps4_console = with_radv_ps4 and host_machine.system() != 'linux'
+-ps4_sysmodule_libs = with_radv_ps4_console ? ['-lSceGnmDriver'] : []
++ps4_sysmodule_libs = with_radv_ps4_console ? ['-lSceGnmDriver', '-lSceVideoOut'] : []
+ 
+ with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
+ if with_gfxstream_emulated_android
+diff --git a/src/amd/vulkan/radv_wsi.h b/src/amd/vulkan/radv_wsi.h
+index 1ca8f78..638b403 100644
+--- a/src/amd/vulkan/radv_wsi.h
++++ b/src/amd/vulkan/radv_wsi.h
+@@ -13,10 +13,10 @@
+ 
+ #include "radv_physical_device.h"
+ 
+-/* The PlayStation 5 has no window system: its surfaces are headless ones,
+- * which need VK_KHR_surface like any other. */
++/* The consoles have no window system: their surfaces are displays and
++ * headless ones, which need VK_KHR_surface like any other. */
+ #if defined(VK_USE_PLATFORM_WAYLAND_KHR) || defined(VK_USE_PLATFORM_XCB_KHR) || defined(VK_USE_PLATFORM_XLIB_KHR) ||   \
+-   defined(VK_USE_PLATFORM_DISPLAY_KHR) || defined(RADV_PS5)
++   defined(VK_USE_PLATFORM_DISPLAY_KHR) || defined(RADV_CONSOLE)
+ #define RADV_USE_WSI_PLATFORM
+ #endif
+ 
+diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
+index 1c2a3ca..14a1ca2 100644
+--- a/src/vulkan/meson.build
++++ b/src/vulkan/meson.build
+@@ -57,6 +57,9 @@ endif
+ if with_wsi_videoout
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+   vulkan_wsi_list += '-DMESA_WSI_VIDEOOUT'
++  if get_option('radv-winsys') == 'ps4'
++    vulkan_wsi_list += '-DMESA_WSI_VIDEOOUT_PS4'
++  endif
+ elif system_has_kms_drm and not with_platform_android
+   vulkan_wsi_deps += [dep_libdrm, dep_display_info]
+   vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
+diff --git a/src/vulkan/wsi/wsi_common_videoout.c b/src/vulkan/wsi/wsi_common_videoout.c
+index a266948..4b3acc2 100644
+--- a/src/vulkan/wsi/wsi_common_videoout.c
++++ b/src/vulkan/wsi/wsi_common_videoout.c
+@@ -25,6 +25,14 @@
+  * acquire takes a buffer that is neither on screen, nor waiting for its flip
+  * to show, nor held by an application, the one flipped longest ago, and waits
+  * for a flip or a vblank when none is.
++ *
++ * The PlayStation 4's VideoOut (MESA_WSI_VIDEOOUT_PS4) works the same way,
++ * with its own calls: one 1920x1080 mode at 59.94 Hz and no high-frame-rate
++ * one, five framebuffers of garlic direct memory (the GPU's fast path, which
++ * the CPU writes combined), and the GPU's 2D thin display tiling, which RADV
++ * gives a GFX7 scanout image and VideoOut scans out as its tiled mode. VideoOut
++ * takes the framebuffers with their pitch, so they are registered once the
++ * first swapchain's images are laid out in them.
+  */
+ 
+ #include <assert.h>
+@@ -47,15 +55,32 @@
+ #if defined(__PROSPERO__)
+ #include <immintrin.h>
+ #include "ps5_sce.h"
+-#else
++#elif defined(MESA_WSI_VIDEOOUT_PS4)
++/* The console's declarations, for the host model's too. */
++#include "ps4_sce.h"
++#endif
++#if !defined(__PROSPERO__) && !defined(__ORBIS__)
+ #include <sys/mman.h>
+ #endif
+ 
++#if defined(MESA_WSI_VIDEOOUT_PS4)
++#define VIDEOOUT_NAME "PS4 VideoOut"
++#define VIDEOOUT_WIDTH 1920
++#define VIDEOOUT_HEIGHT 1080
++/* A 1920x1080 four-byte image in 2D tiles is 1920x1088 pixels, 8 MiB. */
++#define VIDEOOUT_BUFFER_BYTES (UINT64_C(16) << 20)
++#define VIDEOOUT_USER_SYSTEM PS4_VIDEO_OUT_USER_SYSTEM
++#define VIDEOOUT_FLIP_VSYNC PS4_VIDEO_OUT_FLIP_VSYNC
++#else
++#define VIDEOOUT_NAME "PS5 VideoOut"
+ #define VIDEOOUT_WIDTH 3840
+ #define VIDEOOUT_HEIGHT 2160
+-#define VIDEOOUT_BUFFERS 5
+ /* A 3840x2160 four-byte image in 64 KiB tiles is 30x17 tiles, 31.9 MiB. */
+ #define VIDEOOUT_BUFFER_BYTES (UINT64_C(32) << 20)
++#define VIDEOOUT_USER_SYSTEM PS5_VIDEO_OUT_USER_SYSTEM
++#define VIDEOOUT_FLIP_VSYNC PS5_VIDEO_OUT_FLIP_VSYNC
++#endif
++#define VIDEOOUT_BUFFERS 5
+ #define VIDEOOUT_BUFFER_ALIGNMENT (UINT64_C(2) << 20)
+ #define VIDEOOUT_REFRESH_MILLIHERTZ 59940
+ #define VIDEOOUT_HIGH_REFRESH_MILLIHERTZ 119880
+@@ -66,7 +91,7 @@
+ /* param.json's attribute3 bits for high-frame-rate output (PS5_Vulkan R31). */
+ #define VIDEOOUT_ATTRIBUTE3_HIGH_FRAME_RATE 0x80040u
+ 
+-#if !defined(__PROSPERO__)
++#if !defined(__PROSPERO__) && !defined(MESA_WSI_VIDEOOUT_PS4)
+ /* The host model: flips show at once and a vblank comes every millisecond,
+  * enough for the host builds to run the swapchain's logic. */
+ #define PS5_VIDEO_OUT_USER_SYSTEM 0xff
+@@ -147,6 +172,75 @@ sceVideoOutConfigureOutput(int32_t handle, uint32_t mode, const void *a, const v
+ }
+ #endif
+ 
++#if defined(MESA_WSI_VIDEOOUT_PS4) && !defined(__ORBIS__)
++/* The PS4's host model, as the PS5's: flips show at once and a vblank comes
++ * every millisecond. Its functions stand in for the console's by name. */
++static int64_t host_shown_argument;
++
++static int32_t
++videoout_host_open(int32_t user, int32_t bus, int32_t index, const void *parameter)
++{
++   return 1;
++}
++
++static int32_t
++videoout_host_set_flip_rate(int32_t handle, int32_t rate)
++{
++   return 0;
++}
++
++static void
++videoout_host_set_buffer_attribute(struct ps4_video_out_buffer_attribute *attribute, uint32_t pixel_format,
++                                   uint32_t tiling_mode, uint32_t aspect_ratio, uint32_t width, uint32_t height,
++                                   uint32_t pitch_in_pixel)
++{
++   *attribute = (struct ps4_video_out_buffer_attribute){
++      .pixel_format = pixel_format,
++      .tiling_mode = tiling_mode,
++      .aspect_ratio = aspect_ratio,
++      .width = width,
++      .height = height,
++      .pitch_in_pixel = pitch_in_pixel,
++   };
++}
++
++static int32_t
++videoout_host_register_buffers(int32_t handle, int32_t start, void *const *addresses, int32_t count,
++                               const struct ps4_video_out_buffer_attribute *attribute)
++{
++   return 0;
++}
++
++static int32_t
++videoout_host_submit_flip(int32_t handle, int32_t buffer_index, uint32_t flip_mode, int64_t argument)
++{
++   host_shown_argument = argument;
++   return 0;
++}
++
++static int32_t
++videoout_host_get_flip_status(int32_t handle, struct ps4_video_out_flip_status *status)
++{
++   *status = (struct ps4_video_out_flip_status){.flip_argument = host_shown_argument};
++   return 0;
++}
++
++static int32_t
++videoout_host_wait_vblank(int32_t handle)
++{
++   os_time_sleep(1000);
++   return 0;
++}
++
++#define sceVideoOutOpen videoout_host_open
++#define sceVideoOutSetFlipRate videoout_host_set_flip_rate
++#define sceVideoOutSetBufferAttribute videoout_host_set_buffer_attribute
++#define sceVideoOutRegisterBuffers videoout_host_register_buffers
++#define sceVideoOutSubmitFlip videoout_host_submit_flip
++#define sceVideoOutGetFlipStatus videoout_host_get_flip_status
++#define sceVideoOutWaitVblank videoout_host_wait_vblank
++#endif
++
+ /* The display and its modes: one each per process, as VideoOut is. */
+ struct wsi_videoout_mode {
+    uint32_t refresh_millihertz;
+@@ -203,6 +297,9 @@ struct wsi_videoout_output {
+    bool modes_settled;
+    bool high_mode_offered;
+    uint8_t *buffers;
++   /* The pitch, in pixels, the framebuffers were registered with; 0 before
++    * (the PS4's VideoOut takes them with it). */
++   uint32_t registered_pitch;
+    /* The argument of the latest flip submitted; each flip's is one more. */
+    int64_t flip_argument;
+    struct {
+@@ -249,6 +346,7 @@ struct wsi_videoout {
+ 
+ /* --- VideoOut ------------------------------------------------------------ */
+ 
++#if !defined(MESA_WSI_VIDEOOUT_PS4)
+ static bool
+ videoout_title_declares_high_frame_rate(void)
+ {
+@@ -290,6 +388,7 @@ videoout_vblank_period_ns(int handle)
+       }
+    return intervals[VIDEOOUT_PERIOD_INTERVALS / 2];
+ }
++#endif
+ 
+ /* Opens VideoOut once per process, in the high-frame-rate mode where the
+  * title declares it, the output takes it and the display then refreshes at
+@@ -301,11 +400,12 @@ videoout_open_locked(void)
+    if (out->opened)
+       return out->handle >= 0;
+    out->opened = true;
+-   out->handle = sceVideoOutOpen(PS5_VIDEO_OUT_USER_SYSTEM, 0, 0, NULL);
++   out->handle = sceVideoOutOpen(VIDEOOUT_USER_SYSTEM, 0, 0, NULL);
+    if (out->handle < 0) {
+       fprintf(stderr, "wsi/videoout: sceVideoOutOpen failed: 0x%08x\n", (unsigned)out->handle);
+       return false;
+    }
++#if !defined(MESA_WSI_VIDEOOUT_PS4)
+    if (videoout_title_declares_high_frame_rate()) {
+       const int supported =
+          sceVideoOutIsOutputSupported(out->handle, PS5_VIDEO_OUT_MODE_HIGH_FRAME_RATE, NULL, NULL, NULL);
+@@ -328,6 +428,7 @@ videoout_open_locked(void)
+                  supported > 0 ? "refused" : "not supported", configured);
+       }
+    }
++#endif
+    return true;
+ }
+ 
+@@ -374,12 +475,40 @@ videoout_register_locked(void)
+    for (size_t at = 0; at < bytes; at += 64)
+       _mm_clflush(buffers + at);
+    _mm_mfence();
++#elif defined(__ORBIS__)
++   /* Garlic, as the GPU's render targets are: the GPU's fast path. */
++   int64_t physical = -1;
++   if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), bytes, VIDEOOUT_BUFFER_ALIGNMENT,
++                                     PS4_KERNEL_WC_GARLIC, &physical) != 0)
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   void *address = NULL;
++   if (sceKernelMapDirectMemory(&address, bytes,
++                                PS4_KERNEL_PROT_CPU_READ | PS4_KERNEL_PROT_CPU_WRITE | PS4_KERNEL_PROT_GPU_READ |
++                                   PS4_KERNEL_PROT_GPU_WRITE,
++                                0, physical, VIDEOOUT_BUFFER_ALIGNMENT) != 0) {
++      sceKernelReleaseDirectMemory(physical, bytes);
++      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   }
++   buffers = address;
++   /* Written combined: the stores need only leave the CPU. */
++   memset(buffers, 0, bytes);
++   __builtin_ia32_sfence();
+ #else
+-   buffers = mmap(NULL, bytes, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
+-   if (buffers == MAP_FAILED)
++   /* Aligned as the console's, which a host pointer import requires. */
++   uint8_t *const mapping = mmap(NULL, bytes + VIDEOOUT_BUFFER_ALIGNMENT, PROT_READ | PROT_WRITE,
++                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
++   if (mapping == MAP_FAILED)
+       return VK_ERROR_OUT_OF_DEVICE_MEMORY;
++   buffers = (uint8_t *)align_uintptr((uintptr_t)mapping, VIDEOOUT_BUFFER_ALIGNMENT);
+ #endif
+ 
++#if defined(MESA_WSI_VIDEOOUT_PS4)
++   /* VideoOut takes them with their pitch, which the first swapchain's images
++    * give (videoout_register_pitch_locked). */
++   out->buffers = buffers;
++   return VK_SUCCESS;
++#else
++
+    int result = sceVideoOutSetFlipRate(out->handle, 0);
+    struct ps5_video_out_buffer registered[VIDEOOUT_BUFFERS];
+    for (uint32_t i = 0; i < VIDEOOUT_BUFFERS; i++)
+@@ -396,15 +525,52 @@ videoout_register_locked(void)
+    }
+    out->buffers = buffers;
+    return VK_SUCCESS;
++#endif
+ }
+ 
++#if defined(MESA_WSI_VIDEOOUT_PS4)
++/* The framebuffers registered once per process, as the images in them are
++ * laid out: B8G8R8A8 in the GPU's display tiles, at the pitch the images
++ * have. A later swapchain's images have the same layout. Under lock. */
++static VkResult
++videoout_register_pitch_locked(uint32_t pitch_pixels)
++{
++   struct wsi_videoout_output *out = &videoout_output;
++   if (out->registered_pitch)
++      return out->registered_pitch == pitch_pixels ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
++
++   int result = sceVideoOutSetFlipRate(out->handle, 0);
++   struct ps4_video_out_buffer_attribute attribute;
++   sceVideoOutSetBufferAttribute(&attribute, PS4_VIDEO_OUT_PIXEL_FORMAT_A8R8G8B8_SRGB, PS4_VIDEO_OUT_TILING_MODE_TILE,
++                                 PS4_VIDEO_OUT_ASPECT_RATIO_16_9, VIDEOOUT_WIDTH, VIDEOOUT_HEIGHT, pitch_pixels);
++   void *addresses[VIDEOOUT_BUFFERS];
++   for (uint32_t i = 0; i < VIDEOOUT_BUFFERS; i++)
++      addresses[i] = out->buffers + i * VIDEOOUT_BUFFER_BYTES;
++   if (result == 0)
++      result = sceVideoOutRegisterBuffers(out->handle, 0, addresses, VIDEOOUT_BUFFERS, &attribute);
++   if (result < 0) {
++      fprintf(stderr, "wsi/videoout: the framebuffers were not registered: 0x%08x\n", (unsigned)result);
++      return VK_ERROR_INITIALIZATION_FAILED;
++   }
++   out->registered_pitch = pitch_pixels;
++   return VK_SUCCESS;
++}
++#endif
++
+ static int64_t
+ videoout_shown_argument_locked(void)
+ {
++#if defined(MESA_WSI_VIDEOOUT_PS4)
++   struct ps4_video_out_flip_status status = {0};
++   if (videoout_output.flip_argument == 0 || sceVideoOutGetFlipStatus(videoout_output.handle, &status) != 0)
++      return 0;
++   return status.flip_argument;
++#else
+    uint64_t status[PS5_VIDEO_OUT_FLIP_STATUS_WORDS] = {0};
+    if (videoout_output.flip_argument == 0 || sceVideoOutGetFlipStatus(videoout_output.handle, status) != 0)
+       return 0;
+    return (int64_t)status[PS5_VIDEO_OUT_FLIP_STATUS_SHOWN_ARGUMENT];
++#endif
+ }
+ 
+ /* The flip thread: each present's flip once its frame is done, in order. */
+@@ -425,8 +591,7 @@ videoout_flip_thread(void *data)
+ 
+       mtx_lock(&out->lock);
+       const int64_t argument = out->flip_argument + 1;
+-      const int result = sceVideoOutSubmitFlip(out->handle, (int32_t)present.buffer, PS5_VIDEO_OUT_FLIP_VSYNC,
+-                                               argument);
++      const int result = sceVideoOutSubmitFlip(out->handle, (int32_t)present.buffer, VIDEOOUT_FLIP_VSYNC, argument);
+       if (result == 0) {
+          out->flip_argument = argument;
+          out->buffer[present.buffer].argument = argument;
+@@ -454,7 +619,7 @@ wsi_GetPhysicalDeviceDisplayPropertiesKHR(VkPhysicalDevice physicalDevice, uint3
+    {
+       *prop = (VkDisplayPropertiesKHR){
+          .display = videoout_display_handle(),
+-         .displayName = "PS5 VideoOut",
++         .displayName = VIDEOOUT_NAME,
+          /* The size of the screen VideoOut drives is not known. */
+          .physicalDimensions = {0, 0},
+          .physicalResolution = videoout_extent,
+@@ -1063,6 +1228,30 @@ videoout_surface_create_swapchain(VkIcdSurfaceBase *icd_surface, VkDevice device
+       }
+    }
+ 
++#if defined(MESA_WSI_VIDEOOUT_PS4)
++   /* VideoOut scans the framebuffers out as the images lie in them: from
++    * their start, at the images' pitch. */
++   const VkImageSubresource subresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
++   VkSubresourceLayout layout;
++   wsi_device->GetImageSubresourceLayout(device, chain->images[0].image, &subresource, &layout);
++   result = layout.offset == 0 && layout.rowPitch % 4 == 0 ? VK_SUCCESS : VK_ERROR_INITIALIZATION_FAILED;
++   if (result == VK_SUCCESS) {
++      mtx_lock(&out->lock);
++      result = videoout_register_pitch_locked((uint32_t)(layout.rowPitch / 4));
++      mtx_unlock(&out->lock);
++   } else {
++      fprintf(stderr, "wsi/videoout: the images lie at %" PRIu64 " with a pitch of %" PRIu64 " bytes\n",
++              (uint64_t)layout.offset, (uint64_t)layout.rowPitch);
++   }
++   if (result != VK_SUCCESS) {
++      for (uint32_t i = 0; i < num_images; i++)
++         wsi_destroy_image(&chain->base, &chain->images[i]);
++      wsi_swapchain_finish(&chain->base);
++      vk_free(pAllocator, chain);
++      return result;
++   }
++#endif
++
+    /* The old swapchain is retired: its acquires and presents are out of date. */
+    mtx_lock(&out->lock);
+    if (out->current)
+-- 
+2.43.0
+

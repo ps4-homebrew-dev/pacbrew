@@ -1,0 +1,225 @@
+From 4582aac7ac8577806b7d193bfe05484b29456b03 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 11:29:20 +0000
+Subject: [PATCH 33/34] radv/ps4: host pointers in direct memory mapped for the
+ GPU
+
+VK_EXT_external_memory_host imports memory the application already
+mapped for the GPU: direct memory whose every mapping in the range gives
+the GPU read and write access, below its 40-bit address limit, as
+sceKernelVirtualQuery reports it. The PS4 grants the GPU no other memory,
+so anything else is refused. An imported buffer stays the application's.
+
+VideoOut's framebuffers reach RADV this way (wsi_common_videoout.c).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ include/ps4_sce.h                             | 18 +++++++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_bo.c       | 38 +++++++++++++++----
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.c | 32 ++++++++++++++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.h |  5 +++
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c   |  7 ++--
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h   |  2 +
+ 6 files changed, 92 insertions(+), 10 deletions(-)
+
+diff --git a/include/ps4_sce.h b/include/ps4_sce.h
+index 6aeb906..e39263a 100644
+--- a/include/ps4_sce.h
++++ b/include/ps4_sce.h
+@@ -49,6 +49,24 @@ int32_t sceKernelAvailableDirectMemorySize(int64_t search_start, int64_t search_
+                                            int64_t *physical, size_t *available);
+ int32_t sceKernelReserveVirtualRange(void **address, size_t length, int flags, size_t alignment);
+ int32_t sceKernelMunmap(void *address, size_t length);
++
++/* What sceKernelVirtualQuery reports of the mapping at an address (flags 0:
++ * the mapping holding it, or an error where there is none). */
++struct ps4_kernel_virtual_query_info {
++   void *start;
++   void *end;
++   int64_t offset;
++   int32_t protection;
++   int32_t memory_type;
++   uint32_t is_flexible : 1;
++   uint32_t is_direct : 1;
++   uint32_t is_stack : 1;
++   uint32_t is_pooled : 1;
++   uint32_t is_committed : 1;
++   char name[32];
++};
++int32_t sceKernelVirtualQuery(const void *address, int flags, struct ps4_kernel_virtual_query_info *info,
++                              size_t size);
+ int32_t sceKernelIsNeoMode(void);
+ 
+ /* ------------------------------------------------------- libSceGnmDriver */
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_bo.c b/src/amd/vulkan/winsys/ps4/radv_ps4_bo.c
+index e9bc123..ee6bc5e 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_bo.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_bo.c
+@@ -21,8 +21,9 @@
+  * the CPU reads back (GTT without write combining) is onion, the rest garlic.
+  *
+  * Based on the PS5 winsys (src/amd/vulkan/winsys/ps5); the PS4 has no sparse
+- * resources, no capture and replay of buffer addresses and no host pointers
+- * the GPU can reach, and its physical device reports none of them. */
++ * resources and no capture and replay of buffer addresses, and its physical
++ * device reports neither. Host pointers are imported where they are already
++ * mapped for the GPU (VideoOut's framebuffers, wsi_common_videoout.c). */
+ 
+ uint64_t radv_ps4_allocated_bytes;
+ 
+@@ -90,6 +91,11 @@ radv_ps4_buffer_destroy(struct radeon_winsys *rws, struct radeon_winsys_bo *base
+    struct radv_ps4_bo *const bo = radv_ps4_bo(base);
+    if (!bo)
+       return;
++   if (bo->imported) {
++      /* The memory stays the application's. */
++      free(bo);
++      return;
++   }
+    p_atomic_add(&radv_ps4_allocated_bytes, -(int64_t)bo->memory.bytes);
+    if (bo->base.initial_domain & RADEON_DOMAIN_VRAM)
+       p_atomic_add(&ws->allocated_vram, -(int64_t)bo->memory.bytes);
+@@ -134,13 +140,31 @@ static VkResult
+ radv_ps4_buffer_from_ptr(struct radeon_winsys *rws, void *pointer, uint64_t size, unsigned priority,
+                          struct radeon_winsys_bo **out_bo)
+ {
+-   (void)rws;
+-   (void)pointer;
+-   (void)size;
+    (void)priority;
+-   /* Only direct memory is the GPU's to reach (radeon_info.has_userptr). */
++   struct radv_ps4_winsys *const ws = radv_ps4_winsys(rws);
+    *out_bo = NULL;
+-   return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++
++   /* Memory the application owns, at the address the CPU uses: only direct
++    * memory mapped for the GPU, which the GPU reaches at that address. The
++    * PS4 grants no GPU access to other memory. */
++   const uint64_t va = (uint64_t)(uintptr_t)pointer;
++   if (!size || va % RADV_PS4_PAGE_BYTES || size % RADV_PS4_PAGE_BYTES || !radv_ps4_memory_gpu_mapped(pointer, size))
++      return VK_ERROR_INVALID_EXTERNAL_HANDLE;
++
++   struct radv_ps4_bo *const bo = calloc(1, sizeof(*bo));
++   if (!bo)
++      return VK_ERROR_OUT_OF_HOST_MEMORY;
++   bo->ws = ws;
++   bo->imported = true;
++   bo->memory = (struct radv_ps4_memory){.cpu = pointer, .bytes = size, .physical = -1, .fd = -1};
++   bo->base.va = va;
++   bo->base.size = size;
++   bo->base.is_local = false;
++   bo->base.use_global_list = true;
++   bo->base.initial_domain = RADEON_DOMAIN_GTT;
++   bo->base.obj_id = p_atomic_inc_return(&radv_ps4_next_obj_id);
++   *out_bo = &bo->base;
++   return VK_SUCCESS;
+ }
+ 
+ static VkResult
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+index 98e3cc5..278ea8a 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+@@ -178,6 +178,29 @@ radv_ps4_platform_is_neo(void)
+    return radv_ps4_neo;
+ }
+ 
++bool
++radv_ps4_memory_gpu_mapped(const void *address, uint64_t bytes)
++{
++   /* Walk the mappings the range spans: each must give the GPU read and
++    * write access. */
++   const uint8_t *at = address;
++   const uint8_t *const end = at + bytes;
++   if ((uint64_t)(uintptr_t)address >= RADV_PS4_GPU_ADDRESS_LIMIT ||
++       bytes > RADV_PS4_GPU_ADDRESS_LIMIT - (uint64_t)(uintptr_t)address)
++      return false;
++   while (at < end) {
++      struct ps4_kernel_virtual_query_info query;
++      if (sceKernelVirtualQuery(at, 0, &query, sizeof(query)) != 0)
++         return false;
++      if ((query.protection & (PS4_KERNEL_PROT_GPU_READ | PS4_KERNEL_PROT_GPU_WRITE)) !=
++             (PS4_KERNEL_PROT_GPU_READ | PS4_KERNEL_PROT_GPU_WRITE) ||
++          (const uint8_t *)query.start > at || (const uint8_t *)query.end <= at)
++         return false;
++      at = query.end;
++   }
++   return true;
++}
++
+ uint64_t
+ radv_ps4_memory_pool_bytes(void)
+ {
+@@ -391,6 +414,15 @@ radv_ps4_platform_is_neo(void)
+    return false;
+ }
+ 
++bool
++radv_ps4_memory_gpu_mapped(const void *address, uint64_t bytes)
++{
++   /* The model runs no GPU work: any memory will do. */
++   (void)address;
++   (void)bytes;
++   return true;
++}
++
+ uint64_t
+ radv_ps4_memory_pool_bytes(void)
+ {
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
+index 6aba6fd..2d3eca7 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
+@@ -91,6 +91,11 @@ void radv_ps4_memory_free(struct radv_ps4_memory *memory);
+ bool radv_ps4_memory_map_at(const struct radv_ps4_memory *memory, void *address);
+ void radv_ps4_memory_unmap_at(void *address, uint64_t bytes, bool reserve);
+ 
++/* Whether every page of [address, address + bytes) is mapped for the GPU to
++ * read and write, below its address limit: memory a host pointer import may
++ * take. */
++bool radv_ps4_memory_gpu_mapped(const void *address, uint64_t bytes);
++
+ /* The direct-memory pool, which the CPU draws on too, and what it has left. */
+ uint64_t radv_ps4_memory_pool_bytes(void);
+ uint64_t radv_ps4_memory_available_bytes(void);
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index 712c965..dfcc2b2 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -268,15 +268,16 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+     * (vk_sync_timeline), with threaded submission for waits before signals. */
+    info->has_timeline_syncobj = true;
+    info->kernel_has_modifiers = false;
+-   /* No sparse resources, no capture and replay of addresses and no host
+-    * pointers: only direct memory is the GPU's to reach. */
++   /* No sparse resources and no capture and replay of addresses. Host
++    * pointers are imported where they are direct memory mapped for the GPU
++    * (VK_EXT_external_memory_host), as VideoOut's framebuffers are. */
+    info->has_sparse = false;
+    info->has_sparse_prt = false;
+    info->has_sparse_cpu_binds = false;
+    info->max_sparse_va_bytes = 0;
+    info->has_replayable_va = false;
+    info->has_replayable_va_32bit = false;
+-   info->has_userptr = false;
++   info->has_userptr = true;
+    info->has_vm_always_valid = true;
+    /* A compute and transfer queue family whose queues submit to the graphics
+     * ring through the same sceGnmSubmitCommandBuffers: their work runs in turn
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
+index 4cb741b..ab2165a 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
+@@ -99,6 +99,8 @@ struct radv_ps4_bo {
+    /* A second CPU mapping at an address the application chose
+     * (VK_EXT_map_memory_placed), or NULL. */
+    void *placed;
++   /* Host memory the application owns (buffer_from_ptr). */
++   bool imported;
+ };
+ 
+ static inline struct radv_ps4_bo *
+-- 
+2.43.0
+

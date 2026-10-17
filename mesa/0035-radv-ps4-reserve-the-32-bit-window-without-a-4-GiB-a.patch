@@ -1,0 +1,209 @@
+From 4e1bbd0dd37b77364f67bc9a0bee0557e91fe25a Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 11:48:05 +0000
+Subject: [PATCH] radv/ps4: reserve the 32-bit window without a 4 GiB alignment
+
+On the console sceKernelReserveVirtualRange refused the 4 GiB window
+aligned to 4 GiB with EINVAL (0x80020016), and RADV had no device.
+
+32-bit pointers only need to share their high word, so the window must
+lie within one 4 GiB block, not span one. It is reserved aligned to its
+size where the kernel takes that alignment, and otherwise as the aligned
+part of a reservation twice the size, at the page alignment, the rest
+given back. Should that fail too, a 1 GiB and then a 256 MiB window is
+tried; RADV's 32-bit buffers fit in far less. What was refused, and a
+window smaller than 4 GiB, are logged.
+
+Re-reservations of the window's ranges ask for the page alignment rather
+than 0.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.c | 88 +++++++++++++++----
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.h |  5 +-
+ 2 files changed, 74 insertions(+), 19 deletions(-)
+
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+index 278ea8a..14bbcc3 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+@@ -7,6 +7,7 @@
+ #include "radv_ps4_platform.h"
+ 
+ #include <errno.h>
++#include <inttypes.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <string.h>
+@@ -25,14 +26,17 @@
+ 
+ /* ----------------------------------------------------- the window's granules */
+ 
+-/* The 4 GiB window, handed out first fit in 64 KiB granules. */
++/* The window, handed out first fit in 64 KiB granules: 4 GiB at most, less
++ * where the console reserves no more (radv_ps4_window_reserve). */
+ #define RADV_PS4_GRANULES ((uint32_t)(RADV_PS4_WINDOW_BYTES / RADV_PS4_GRANULE_BYTES))
+ 
+ static struct {
+    simple_mtx_t lock;
+    uint8_t *base;
++   /* The granules the window holds. */
++   uint32_t granules;
+    uint64_t used[RADV_PS4_GRANULES / 64];
+-} radv_ps4_window = {.lock = SIMPLE_MTX_INITIALIZER};
++} radv_ps4_window = {.lock = SIMPLE_MTX_INITIALIZER, .granules = RADV_PS4_GRANULES};
+ 
+ static bool
+ radv_ps4_granule_used(uint32_t granule)
+@@ -56,7 +60,7 @@ radv_ps4_granules_mark(uint32_t first, uint32_t count, bool used)
+ static uint32_t
+ radv_ps4_granules_take(uint32_t count, uint32_t align)
+ {
+-   for (uint32_t first = 0; first + count <= RADV_PS4_GRANULES; first += align) {
++   for (uint32_t first = 0; first + count <= radv_ps4_window.granules; first += align) {
+       uint32_t g = first;
+       while (g < first + count && !radv_ps4_granule_used(g))
+          g++;
+@@ -141,6 +145,52 @@ radv_ps4_submit_times(uint64_t times[2])
+ 
+ static bool radv_ps4_neo;
+ 
++/* Whether a window of bytes at window holds 32-bit pointers: within one
++ * 4 GiB block (at a multiple of its size, a power of two of at most 4 GiB)
++ * and below the GPU's address limit. */
++static bool
++radv_ps4_window_fits(const uint8_t *window, uint64_t bytes)
++{
++   const uint64_t at = (uint64_t)(uintptr_t)window;
++   return at % bytes == 0 && at + bytes <= RADV_PS4_GPU_ADDRESS_LIMIT;
++}
++
++/* Reserves a window of bytes for 32-bit pointers: aligned to its size where
++ * the kernel takes that alignment, and otherwise as the aligned part of a
++ * reservation twice the size, the rest given back. */
++static uint8_t *
++radv_ps4_window_reserve(uint64_t bytes)
++{
++   void *window = NULL;
++   const int aligned = sceKernelReserveVirtualRange(&window, bytes, 0, bytes);
++   if (aligned == 0) {
++      if (radv_ps4_window_fits(window, bytes))
++         return window;
++      sceKernelMunmap(window, bytes);
++   }
++
++   void *range = NULL;
++   const int trimmed = sceKernelReserveVirtualRange(&range, 2 * bytes, 0, RADV_PS4_PAGE_BYTES);
++   if (trimmed == 0) {
++      uint8_t *const start = range;
++      uint8_t *const end = start + 2 * bytes;
++      uint8_t *const at = (uint8_t *)align_uintptr((uintptr_t)start, bytes);
++      if (at > start)
++         sceKernelMunmap(start, at - start);
++      if (end > at + bytes)
++         sceKernelMunmap(at + bytes, end - (at + bytes));
++      if (radv_ps4_window_fits(at, bytes))
++         return at;
++      sceKernelMunmap(at, bytes);
++   }
++
++   fprintf(stderr,
++           "radv/ps4: no %" PRIu64 " MiB window for 32-bit pointers: 0x%08x aligned, 0x%08x trimmed%s\n",
++           bytes >> 20, (unsigned)aligned, (unsigned)trimmed,
++           aligned == 0 || trimmed == 0 ? " (not below 1 TiB)" : "");
++   return NULL;
++}
++
+ static bool
+ radv_ps4_platform_once(void)
+ {
+@@ -149,19 +199,23 @@ radv_ps4_platform_once(void)
+    setenv("MESA_SHADER_CACHE_DIR", "/app0/radv-shader-cache", 0);
+    setenv("MESA_DISK_CACHE_DATABASE", "1", 0);
+ 
+-   void *window = NULL;
+-   int err = sceKernelReserveVirtualRange(&window, RADV_PS4_WINDOW_BYTES, 0, RADV_PS4_WINDOW_BYTES);
+-   if (err) {
+-      fprintf(stderr, "radv/ps4: no 4 GiB window for 32-bit pointers: 0x%08x\n", (unsigned)err);
+-      return false;
++   /* 32-bit pointers share their high word, so the window must not cross a
++    * 4 GiB boundary; it need not be 4 GiB. RADV's 32-bit buffers (shaders,
++    * descriptors, uploads) fit in far less. */
++   static const uint64_t sizes[] = {RADV_PS4_WINDOW_BYTES, UINT64_C(1) << 30, UINT64_C(256) << 20};
++   uint8_t *window = NULL;
++   uint64_t bytes = 0;
++   for (unsigned i = 0; i < ARRAY_SIZE(sizes) && !window; i++) {
++      bytes = sizes[i];
++      window = radv_ps4_window_reserve(bytes);
+    }
+-   if ((uintptr_t)window % RADV_PS4_WINDOW_BYTES ||
+-       (uint64_t)(uintptr_t)window + RADV_PS4_WINDOW_BYTES > RADV_PS4_GPU_ADDRESS_LIMIT) {
+-      fprintf(stderr, "radv/ps4: the window at %p is not 4 GiB aligned below 1 TiB\n", window);
+-      sceKernelMunmap(window, RADV_PS4_WINDOW_BYTES);
++   if (!window)
+       return false;
+-   }
++   if (bytes != RADV_PS4_WINDOW_BYTES)
++      fprintf(stderr, "radv/ps4: a %" PRIu64 " MiB window for 32-bit pointers at %p\n", bytes >> 20,
++              (void *)window);
+    radv_ps4_window.base = window;
++   radv_ps4_window.granules = (uint32_t)(bytes / RADV_PS4_GRANULE_BYTES);
+    radv_ps4_neo = sceKernelIsNeoMode() > 0;
+    return true;
+ }
+@@ -247,7 +301,7 @@ radv_ps4_window_unmap(void *at, uint64_t bytes)
+ {
+    sceKernelMunmap(at, bytes);
+    void *again = at;
+-   if (sceKernelReserveVirtualRange(&again, bytes, PS4_KERNEL_MAP_FIXED, 0) || again != at)
++   if (sceKernelReserveVirtualRange(&again, bytes, PS4_KERNEL_MAP_FIXED, RADV_PS4_PAGE_BYTES) || again != at)
+       fprintf(stderr, "radv/ps4: could not reserve %p again in the window\n", at);
+ }
+ 
+@@ -276,7 +330,7 @@ radv_ps4_memory_alloc(uint64_t bytes, uint64_t alignment, bool window32, enum ra
+       simple_mtx_unlock(&radv_ps4_window.lock);
+       if (first == UINT32_MAX) {
+          sceKernelReleaseDirectMemory(physical, bytes);
+-         radv_ps4_last_error = "the 4 GiB window is full";
++         radv_ps4_last_error = "the 32-bit window is full";
+          return false;
+       }
+       out->granule = first;
+@@ -334,7 +388,7 @@ radv_ps4_memory_unmap_at(void *address, uint64_t bytes, bool reserve)
+    sceKernelMunmap(address, bytes);
+    if (reserve) {
+       void *again = address;
+-      sceKernelReserveVirtualRange(&again, bytes, PS4_KERNEL_MAP_FIXED, 0);
++      sceKernelReserveVirtualRange(&again, bytes, PS4_KERNEL_MAP_FIXED, RADV_PS4_PAGE_BYTES);
+    }
+ }
+ 
+@@ -492,7 +546,7 @@ radv_ps4_memory_alloc(uint64_t bytes, uint64_t alignment, bool window32, enum ra
+       simple_mtx_unlock(&radv_ps4_window.lock);
+       if (first == UINT32_MAX) {
+          close(fd);
+-         radv_ps4_last_error = "the 4 GiB window is full";
++         radv_ps4_last_error = "the 32-bit window is full";
+          return false;
+       }
+       out->granule = first;
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
+index 2d3eca7..472e4aa 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
+@@ -29,8 +29,9 @@
+ /* The GPU's virtual addresses are 40 bits wide (GFX7). */
+ #define RADV_PS4_GPU_ADDRESS_LIMIT (UINT64_C(1) << 40)
+ 
+-/* The shaders' 32-bit pointers reach a 4 GiB window, reserved at a 4 GiB
+- * boundary wherever the kernel finds room for it (radv_ps4_address32_hi). */
++/* The shaders' 32-bit pointers reach a window of at most 4 GiB within one
++ * 4 GiB block, reserved wherever the kernel finds room for it
++ * (radv_ps4_address32_hi). */
+ #define RADV_PS4_WINDOW_BYTES (UINT64_C(1) << 32)
+ 
+ /* Direct memory is granted in 16 KiB pages; allocations of at least 2 MiB get
+-- 
+2.43.0
+

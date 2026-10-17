@@ -1,0 +1,145 @@
+From 6bcbabc17c1c2aac90fbedc575f6581575effebc Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 12:50:11 +0000
+Subject: [PATCH] radv/ps4: a submission progress trace
+
+RADV_PS4_TRACE writes a per-submission tag with WRITE_DATA (which the
+console runs, as the gnm_submit sample shows) after the preamble and
+after the streams, into a slot in the marker's page. When the GPU hangs
+inside a frame, the wait-timeout prints the tag, which tells whether the
+CP wedged in the preamble, a draw, or the trailing flush and fence. Only
+a submission that fits one DCB is traced.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/vulkan/winsys/ps4/radv_ps4_cs.c     | 44 +++++++++++++++++++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c |  6 +++
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h |  5 +++
+ 3 files changed, 55 insertions(+)
+
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c b/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c
+index 7ba4800..4d6e333 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_cs.c
+@@ -318,6 +318,34 @@ radv_ps4_cs_annotate(struct ac_cmdbuf *cs, const char *marker)
+  * are (gfx_v7_0_ring_emit_fence_gfx), and the one the gnm_submit sample waits
+  * on. */
+ 
++/* RADV_PS4_TRACE writes a tag to the queue's trace slot with WRITE_DATA (which
++ * the gnm_submit sample runs on the console) at the boundaries of a submission
++ * -- after the preamble, after the streams -- so that, when the GPU hangs
++ * inside a frame, the slot tells how far the CP got: nothing (preamble
++ * wedged), the preamble's tag (a draw wedged) or the streams' tag (the trailing
++ * flush or the fence). Only a submission that fits one DCB is traced. */
++#define RADV_PS4_WRITEDATA_WORDS 5
++
++static bool
++radv_ps4_cs_trace_enabled(void)
++{
++   static int enabled = -1;
++   if (enabled < 0)
++      enabled = getenv("RADV_PS4_TRACE") != NULL;
++   return enabled;
++}
++
++static void
++radv_ps4_writedata_words(uint32_t *words, uint64_t address, uint32_t value)
++{
++   /* WRITE_DATA from the ME to memory, confirmed written, as gnm_submit's. */
++   words[0] = PKT3(PKT3_WRITE_DATA, 3, 0);
++   words[1] = (5u << 8) | (1u << 20);
++   words[2] = (uint32_t)address;
++   words[3] = (uint32_t)(address >> 32);
++   words[4] = value;
++}
++
+ void
+ radv_ps4_completion_words(uint32_t *words, uint64_t marker_address, uint32_t value)
+ {
+@@ -585,12 +613,14 @@ radv_ps4_cs_submit(struct radeon_winsys_ctx *rctx, const struct radv_winsys_subm
+    uint32_t count = preamble_words + RADV_PS4_COMPLETION_WORDS;
+    uint32_t fill = preamble_words;
+    bool too_large = false;
++   bool multi_part = false;
+    for (unsigned u = 0; u < unit_count; u++) {
+       struct radv_ps4_unit *const unit = util_dynarray_element(&units, struct radv_ps4_unit, u);
+       if (preamble_words + unit->words > room)
+          too_large = true;
+       if (fill > preamble_words && fill + unit->words > room) {
+          unit->starts_part = true;
++         multi_part = true;
+          count += preamble_words;
+          fill = preamble_words;
+       }
+@@ -598,6 +628,12 @@ radv_ps4_cs_submit(struct radeon_winsys_ctx *rctx, const struct radv_winsys_subm
+       count += unit->words;
+    }
+ 
++   /* The trace's two WRITE_DATAs, when a single DCB carries the submission. */
++   const uint64_t trace_address = (uint64_t)(uintptr_t)queue->marker_memory.cpu + RADV_PS4_TRACE_OFFSET;
++   const bool trace = radv_ps4_cs_trace_enabled() && !multi_part && !too_large;
++   if (trace)
++      count += 2 * RADV_PS4_WRITEDATA_WORDS;
++
+    const uint64_t seq = queue->submitted_seq + 1;
+    const uint64_t claim_start = os_time_get_nano();
+    uint32_t *const words = too_large ? NULL : radv_ps4_queue_claim(queue, count, seq);
+@@ -615,6 +651,10 @@ radv_ps4_cs_submit(struct radeon_winsys_ctx *rctx, const struct radv_winsys_subm
+    util_dynarray_init(&starts, NULL);
+    util_dynarray_append(&starts, 0u);
+    uint32_t *at = radv_ps4_copy_streams(words, submit->initial_preamble_cs, submit->initial_preamble_count);
++   if (trace) {
++      radv_ps4_writedata_words(at, trace_address, (uint32_t)(seq * 4 + 1));
++      at += RADV_PS4_WRITEDATA_WORDS;
++   }
+    for (unsigned u = 0; u < unit_count; u++) {
+       const struct radv_ps4_unit *const unit = util_dynarray_element(&units, struct radv_ps4_unit, u);
+       if (unit->starts_part) {
+@@ -629,6 +669,10 @@ radv_ps4_cs_submit(struct radeon_winsys_ctx *rctx, const struct radv_winsys_subm
+          at += piece->cdw;
+       }
+    }
++   if (trace) {
++      radv_ps4_writedata_words(at, trace_address, (uint32_t)(seq * 4 + 2));
++      at += RADV_PS4_WRITEDATA_WORDS;
++   }
+    radv_ps4_completion_words(at, (uint64_t)(uintptr_t)queue->marker, (uint32_t)seq);
+    at += RADV_PS4_COMPLETION_WORDS;
+    assert((uint32_t)(at - words) == count);
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index c200ebc..160802d 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -150,6 +150,12 @@ radv_ps4_queue_wait_seq(struct radv_ps4_queue *queue, uint64_t seq, uint64_t abs
+       } else if (now - progress_at > RADV_PS4_STALL_NS) {
+          fprintf(stderr, "radv/ps4: the GPU has not reached submission %" PRIu64 " (at %" PRIu64 ") in %u s\n", seq,
+                  completed, (unsigned)(RADV_PS4_STALL_NS / 1000000000));
++         if (getenv("RADV_PS4_TRACE")) {
++            const uint32_t tag = *(volatile uint32_t *)((uint8_t *)queue->marker_memory.cpu + RADV_PS4_TRACE_OFFSET);
++            const char *where = tag < seq * 4 + 1 ? "the preamble" : tag == seq * 4 + 1 ? "a draw (the preamble ran)"
++                                                                                        : "the trailing flush or the fence (the draws ran)";
++            fprintf(stderr, "radv/ps4: trace tag %u for submission %" PRIu64 ": the CP wedged in %s\n", tag, seq, where);
++         }
+          return false;
+       }
+       if (now < spin_until)
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
+index 63f8502..c896140 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.h
+@@ -77,6 +77,11 @@ uint64_t radv_ps4_read_gpu_clock(void);
+  * EVENT_WRITE_EOP that writes value to marker_address once the GPU has run
+  * everything before it (radv_ps4_cs.c). */
+ #define RADV_PS4_COMPLETION_WORDS 6
++
++/* RADV_PS4_TRACE writes a per-submission tag here in the marker's page, clear
++ * of the marker (offset 0) and the clock words (1024, 2048). */
++#define RADV_PS4_TRACE_OFFSET 256
++
+ void radv_ps4_completion_words(uint32_t *words, uint64_t marker_address, uint32_t value);
+ 
+ struct radv_ps4_winsys {
+-- 
+2.43.0
+

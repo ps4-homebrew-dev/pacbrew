@@ -1,0 +1,51 @@
+From b05a8ca9868e3e5222a165b7b7fdc0637341b8a4 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 13:42:09 +0000
+Subject: [PATCH] radv/ps4: no CMASK fast clear for a console display surface
+
+The GPU rendered the preamble then wedged in the frame body on the PS4,
+on both a clear and a draw (the submission progress trace showed tag 5).
+RADV had given the swapchain's scanout image a CMASK and was doing a
+CMASK fast clear (CB_COLOR0_INFO fast-clear bit, CB_COLOR0_CMASK and the
+clear words in the dump): a console display scans out raw pixels and
+nothing resolves the compression on a flip, so the CB never completed.
+
+A scanout surface on a console winsys (not amdgpu) gets no single-sample
+CMASK, so the clear is a plain one and rendering is uncompressed, as a
+display can scan out. The PS5's DCC is already disabled for scanout; its
+GFX7 counterpart, the fast clear, is CMASK.
+
+Co-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/vulkan/radv_image.c | 11 ++++++++++-
+ 1 file changed, 10 insertions(+), 1 deletion(-)
+
+diff --git a/src/amd/vulkan/radv_image.c b/src/amd/vulkan/radv_image.c
+index 171e3b5..c826cdf 100644
+--- a/src/amd/vulkan/radv_image.c
++++ b/src/amd/vulkan/radv_image.c
+@@ -843,10 +843,19 @@ static void
+ radv_image_alloc_single_sample_cmask(const struct radv_device *device, const struct radv_image *image,
+                                      struct radeon_surf *surf)
+ {
++   const struct radv_physical_device *pdev = radv_device_physical(device);
++
+    if (!surf->cmask_size || surf->cmask_offset || surf->bpe > 8 || image->vk.mip_levels > 1 ||
+        image->vk.extent.depth > 1 || radv_image_has_dcc(image) || !radv_image_use_fast_clear_for_image(device, image) ||
+        (image->vk.create_flags & VK_IMAGE_CREATE_2_SPARSE_BINDING_BIT_KHR) ||
+-       (image->vk.usage & VK_IMAGE_USAGE_2_HOST_TRANSFER_BIT_KHR))
++       (image->vk.usage & VK_IMAGE_USAGE_2_HOST_TRANSFER_BIT_KHR) ||
++       /* A console display scans out raw pixels, and there is no kernel or
++        * compositor to resolve compression on a flip: a scanout surface gets
++        * no CMASK, so neither a CMASK fast clear nor the compressed rendering
++        * that a fast-clear eliminate would have to resolve (the PS4, whose
++        * GFX7 fast clear is CMASK; DCC, disabled for scanout above, is the
++        * GFX8+ one). The desktop (amdgpu) keeps CMASK. */
++       ((surf->flags & RADEON_SURF_SCANOUT) && !pdev->info.is_amdgpu))
+       return;
+ 
+    assert(image->vk.samples == 1);
+-- 
+2.43.0
+
