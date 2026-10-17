@@ -1,0 +1,141 @@
+pkgname=ps4-homebrew-mesa
+pkgver=26.2.0
+pkgrel=1
+pkgdesc="Open-source Vulkan driver for the PS4 (RADV)"
+url="https://www.mesa3d.org/"
+arch=('any')
+license=("MIT AND BSD-3-Clause AND SGI-B-2.0")
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-zlib')
+
+source=("https://mesa.freedesktop.org/archive/mesa-${pkgver}.tar.xz"
+	"0001-radv-a-PS5-winsys-on-AGC-without-DRM.patch"
+	"0002-radv-ps5-the-console-s-GPU-GFX1013-with-AGC-s-rings.patch"
+	"0003-radv-ps5-report-what-the-GPU-can-do-and-nothing-it-c.patch"
+	"0004-radv-ps5-geometry-shaders-run-as-compute-with-transf.patch"
+	"0005-radv-ps5-placed-maps-ray-tracing-timestamps-and-spar.patch"
+	"0006-wsi-radv-no-libdrm-and-no-SDMA.patch"
+	"0007-radv-ps5-geometry-shaders-as-compute-for-shader-obje.patch"
+	"0008-radv-ps5-a-compute-and-transfer-queue-family-on-the-.patch"
+	"0009-radv-ps5-an-integrated-GPU-s-memory-types-and-host-p.patch"
+	"0010-radv-ps5-tessellation-as-compute-with-geometry-shade.patch"
+	"0011-wsi-VK_KHR_display-on-VideoOut.patch"
+	"0012-radv-ps5-mesh-and-task-shaders.patch"
+	"0013-radv-ps5-ray-tracing-group-handles-captured-and-repl.patch"
+	"0014-radv-ps5-on-disk-shader-cache-in-the-title-s-folder.patch"
+	"0015-radv-ps5-submission-timing-CLFLUSHOPT-and-the-suspen.patch"
+	"0016-radv-threaded-command-buffer-recording-RADV_THREADED.patch"
+	"0017-radv-ps5-declare-the-console-s-functions-in-include-.patch"
+	"0018-radv-ps5-build-the-Linux-host-model-on-any-CPU.patch"
+	"0019-radv-ps5-say-why-the-device-cannot-be-set-up.patch"
+	"0020-util-memstream-a-temporary-file-where-libc-has-no-op.patch"
+	"0021-radv-ps5-RADV-is-the-console-s-libvulkan.so.1.patch"
+	"0022-c11-Mesa-s-threads-under-names-of-their-own-on-the-P.patch"
+	"0023-gallium-OpenGL-on-the-PS5-console-through-zink.patch"
+	"0024-zink-kopper-surfaces-on-VK_KHR_display.patch"
+	"0025-egl-the-videoout-platform-EGL-on-a-VK_KHR_display-th.patch"
+	"0026-glapi-libGL.so.1-for-EGL-without-GLX.patch"
+	"0027-ac-leave-the-raster-config-to-the-kernel-where-it-se.patch"
+	"0028-radv-geometry-shaders-as-compute-only-where-built.patch"
+	"0029-radv-a-PS4-winsys-on-Gnm.patch"
+	"0030-amd-addrlib-no-AVX2-swizzlers-in-the-PS4-console-bui.patch"
+	"0031-util-the-PS4-s-FreeBSD-9-kernel-and-the-PS5-s-condit.patch"
+	"0032-radv-ps4-the-shader-cache-in-the-title-s-folder.patch")
+
+sha256sums=('SKIP'
+	    'cf84da22579c81fad237217fc4a98ddf68b2405b153e270ab8a0f1cf74e9b2b6'
+	    '3f48a0c5c014044e67e8e16f8169523757c9dded3266359fc63d3c3174011d3f'
+	    '982beac2285e469e7a53712872b8c0edc1c399ca76663ee7a5a62532339a5bb9'
+	    'bed5a33fe06debe43421e650ae32795257b2ecf1c2a0b6da41d808d535297dca'
+	    'efda821a82e2f60c7e0adaa7ba499479a4d1774b95de906f87eeaa4de1f38514'
+	    'babee341212cdae838cf57497e253a257daebabd7d805c2244d5e28d6e3b9d9b'
+	    'b24b9a3c4ca127e29692f18b5820427639b714aeb81579a03ed953dd8812f1b7'
+	    '308e1ff73bb86ddac1125ebe88fade611d1471714aca03a2787355367063b4eb'
+	    '43d5f80521086595889adf3dd2ddef62f759ea86994f3ce7034515e393e1b4b7'
+	    '770a2139330bce805e497374faa8e35e235e9f3f737d4c5346ce999e3ea14569'
+	    '96449df6adecec55da897ebb755d3a09c3332c6f88ac84718f3e94b267d25909'
+	    '0362aeb8ec1836903daa6c2bd1ce12424bf25ac9fbcf85b53d33af1229940e9f'
+	    '64211e5f1a53fdb25b48be65280a11a9fa7048aee642adb911cb10cc0e914fee'
+	    '4ae659f0fda9609d6bf57fc0b624f39a478875708700251bcaa0a5dd38865a9d'
+	    'eae3380968208b3e83a26e8782648c4699c39406e777232cb9cee61f2798626e'
+	    '3ea071b3e303979c3799916b8d4d2a14afe666e3ff70a1abf400221701105b88'
+	    '0bd9d0c5eca389172d44be689ea51399d01fd08a3e906f9124298cc241543a88'
+	    '8a19ff24b44edd9ec0d5d4000976f261565998d838af3e203af3bdb0dda6a2d9'
+	    'fdbbb3dfc8117409d8b6bb34fb05fdf9250bdac11da957f4bc52495088668ad5'
+	    'ef06822d99639154ac87441e36219c87c9e9f3e82502c3ef4c97d15805423151'
+	    'ddca499dc1c9fa38da7275da038738ff226784f344ce4c5faab501dfe3b159ed'
+	    '52fe528610f412f122f718fa1041bd9e7abd0a5e8b6242763d4152a7dae69886'
+	    '94924350e573853d3edb79060e7b0a65111bece102cf467ad082fefa4fc2205e'
+	    'e62737e4e0869e688908f8e42acb60f89fe443a0da3b7337bcaf07d00ea7e7e3'
+	    '08026827016385ea24581abff4cb88ab10da80e9d91da332afed496790067bb8'
+	    'ded8106cfa5346d67499b20a1b4a89b10f62510bd193432f50dd6555d442f5ba'
+	    '08168cd3739302eaea61c3eb80110423efb73d7ed1adf08b8a853ba715c395dd'
+	    'dc2063a58423eea57a9f64514033c288ee5e17d4005fec766b42199ef5895d31'
+	    '1ca88b8b159c142408130167183f5b81bfc7328b3f94b9e0b9b9fbd95cdb8b00'
+	    '4ce86c145d034c300014fb72ce38574d9ef0b04f9ebe8d1cc7e103983b1876d7'
+	    '494a78298d2cf6a43f81ff4ef5ac81db79fed4d3a6e13e96c48e27a43de8d36c'
+	    'afcb7b07c577cb9bcc14423ae20406c8fb8e06c8425ce4b582618b40a0691b21')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+    
+    cd "${srcdir}/mesa-${pkgver}"
+
+    local p
+    for p in "${srcdir}"/[0-9][0-9][0-9][0-9]-*.patch; do
+	echo "Applying $(basename "$p")"
+	patch -Np1 -i "$p"
+    done
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd mesa-${pkgver}
+
+    local build_id
+    build_id=$(cat <(echo "${pkgver}") "${srcdir}"/[0-9][0-9][0-9][0-9]-*.patch \
+		   | sha1sum | cut -d' ' -f1)
+
+    # Vulkan only, without a WSI, until the VideoOut WSI (the PS5's 0011)
+    # and zink/EGL are brought to the PS4. Unlike the PS5's, this build
+    # needs no host mesa_clc: nothing in it is written in OpenCL C.
+    ${MESON} setup builddir \
+	     -Ddefault_library=shared \
+	     -Dbuildtype=debugoptimized \
+	     -Db_ndebug=true \
+	     -Dradv-build-id=${build_id} \
+	     -Dradv-winsys=ps4 \
+	     -Dvulkan-drivers=amd \
+	     -Dvulkan-layers= \
+	     -Dgallium-drivers= \
+	     -Dplatforms= \
+	     -Degl=disabled \
+	     -Dopengl=false \
+	     -Dgles2=disabled \
+	     -Dgles1=disabled \
+	     -Dglx=disabled \
+	     -Dgbm=disabled \
+	     -Dmesa-clc=auto \
+	     -Dllvm=disabled \
+	     -Dzstd=disabled \
+	     -Dzlib=enabled \
+	     -Dshader-cache=enabled \
+	     -Dvalgrind=disabled \
+	     -Dlibunwind=disabled \
+	     -Dexpat=disabled \
+	     -Dxmlconfig=disabled \
+	     -Dvideo-codecs= \
+	     -Dbuild-tests=false
+
+    ${MESON} compile -C builddir
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd mesa-${pkgver}
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
+}

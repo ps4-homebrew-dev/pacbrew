@@ -1,0 +1,175 @@
+From ea1dbeb1874c1ad1a76de782485329e0a865b9ed Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 16 Oct 2026 20:09:04 +0000
+Subject: [PATCH 28/29] radv: geometry shaders as compute only where built
+
+The series links the GS-as-compute functions unconditionally, but only
+builds them for the PS5. radv_gs_compute_none.c gives every other build
+(the PS4's, on GFX7, which has legacy geometry shaders) the stubs: nothing
+wants GS as compute there, and the rest is unreachable.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/vulkan/meson.build            |   3 +
+ src/amd/vulkan/radv_gs_compute_none.c | 134 ++++++++++++++++++++++++++
+ 2 files changed, 137 insertions(+)
+ create mode 100644 src/amd/vulkan/radv_gs_compute_none.c
+
+diff --git a/src/amd/vulkan/meson.build b/src/amd/vulkan/meson.build
+index 7a172fe..7b1b414 100644
+--- a/src/amd/vulkan/meson.build
++++ b/src/amd/vulkan/meson.build
+@@ -326,6 +326,9 @@ if with_radv_ps5
+     command : [prog_vtn_bindgen2, '@INPUT@', '@OUTPUT0@', '@OUTPUT1@'],
+   )
+   libradv_files += libradv_cl
++else
++  # Without them, nothing wants them (radv_gs_compute_none.c).
++  libradv_files += files('radv_gs_compute_none.c', 'radv_gs_compute.h')
+ endif
+ 
+ radv_u_trace = get_option('radv-u_trace')
+diff --git a/src/amd/vulkan/radv_gs_compute_none.c b/src/amd/vulkan/radv_gs_compute_none.c
+new file mode 100644
+index 0000000..512ca04
+--- /dev/null
++++ b/src/amd/vulkan/radv_gs_compute_none.c
+@@ -0,0 +1,134 @@
++/*
++ * Copyright © 2026 John Törnblom
++ *
++ * SPDX-License-Identifier: MIT
++ */
++
++/* A build without geometry shaders run as compute (RADV_GS_COMPUTE, the PS5's,
++ * src/amd/vulkan/radv_gs_compute.c): no pipeline wants them, so nothing else
++ * here is reached. */
++
++#include "radv_gs_compute.h"
++
++#include "util/macros.h"
++
++bool
++radv_gs_compute_wanted(const struct radv_compiler_info *compiler_info, const struct radv_graphics_state_key *gfx_state,
++                       const struct radv_shader_stage *stages)
++{
++   (void)compiler_info;
++   (void)gfx_state;
++   (void)stages;
++   return false;
++}
++
++void
++radv_gs_compute_split(const struct radv_compiler_info *compiler_info, struct radv_shader_stage *stages,
++                      struct radv_gs_compute_nir *out)
++{
++   (void)compiler_info;
++   (void)stages;
++   (void)out;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++uint64_t
++radv_gs_compute_lower_vs(nir_shader *vs, const struct radv_shader_stage_key *key)
++{
++   (void)vs;
++   (void)key;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++nir_shader *
++radv_gs_compute_split_gs(nir_shader *gs, const struct radv_shader_stage_key *key, struct radv_gs_compute_nir *out)
++{
++   (void)gs;
++   (void)key;
++   (void)out;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++void
++radv_gs_compute_lower_tcs(nir_shader *tcs, const struct radv_shader_stage_key *key,
++                          struct radv_gs_compute_tess_info *tess)
++{
++   (void)tcs;
++   (void)key;
++   (void)tess;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++void
++radv_gs_compute_lower_tes(nir_shader *tes, const struct radv_shader_stage_key *key,
++                          struct radv_gs_compute_tess_info *tess)
++{
++   (void)tes;
++   (void)key;
++   (void)tess;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++bool
++radv_gs_compute_lower_sysvals(nir_shader *nir, const struct radv_compiler_info *compiler_info,
++                              const struct radv_shader_stage *stage)
++{
++   (void)nir;
++   (void)compiler_info;
++   (void)stage;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++struct radv_shader_binary *
++radv_gs_compute_compile(const struct radv_compiler_info *compiler_info, const struct radv_graphics_state_key *gfx_state,
++                        const struct radv_shader_stage *vs_stage, enum radv_gs_compute_kind kind, nir_shader *nir,
++                        struct radv_shader_debug_info *debug)
++{
++   (void)compiler_info;
++   (void)gfx_state;
++   (void)vs_stage;
++   (void)kind;
++   (void)nir;
++   (void)debug;
++   UNREACHABLE("geometry shaders as compute are not built");
++}
++
++struct radv_gs_compute_deferred_vs *
++radv_gs_compute_deferred_vs_create(struct radv_device *device, const struct radv_gs_compute_binaries *binaries,
++                                   const struct radv_pipeline_layout *layout,
++                                   const struct radv_graphics_state_key *gfx_state)
++{
++   (void)device;
++   (void)binaries;
++   (void)layout;
++   (void)gfx_state;
++   return NULL;
++}
++
++void
++radv_gs_compute_deferred_vs_destroy(struct radv_device *device, struct radv_gs_compute_deferred_vs *deferred)
++{
++   (void)device;
++   (void)deferred;
++}
++
++struct radv_shader *
++radv_gs_compute_deferred_vs_get(struct radv_device *device, struct radv_gs_compute_deferred_vs *deferred,
++                                const struct radv_graphics_state_key *vi_key)
++{
++   (void)device;
++   (void)deferred;
++   (void)vi_key;
++   return NULL;
++}
++
++VkResult
++radv_gs_compute_get_meta_pipeline(struct radv_device *device, enum radv_gs_compute_meta meta, VkPipeline *pipeline,
++                                  VkPipelineLayout *layout)
++{
++   (void)device;
++   (void)meta;
++   (void)pipeline;
++   (void)layout;
++   return VK_ERROR_FEATURE_NOT_PRESENT;
++}
+-- 
+2.43.0
+

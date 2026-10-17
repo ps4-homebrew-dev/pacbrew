@@ -1,0 +1,49 @@
+From aa408046d4f65c1bb8def14447e3293edcbdbbc3 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Fri, 16 Oct 2026 20:09:04 +0000
+Subject: [PATCH 27/29] ac: leave the raster config to the kernel where it sets
+ it
+
+On the PS4 the context CLEAR_STATE gives every submission already holds
+PA_SC_RASTER_CONFIG for the console's render backends, and Gnm never
+writes it. radeon_info.has_kernel_raster_config tells ac_emit_raster_config
+to leave the register alone.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/common/ac_cmdbuf.c   | 3 +++
+ src/amd/common/ac_gpu_info.h | 3 +++
+ 2 files changed, 6 insertions(+)
+
+diff --git a/src/amd/common/ac_cmdbuf.c b/src/amd/common/ac_cmdbuf.c
+index ea67cbf..3b34709 100644
+--- a/src/amd/common/ac_cmdbuf.c
++++ b/src/amd/common/ac_cmdbuf.c
+@@ -223,6 +223,9 @@ ac_emit_raster_config(const struct radeon_info *info, struct ac_pm4_state *pm4)
+    const unsigned num_rb = MIN2(info->max_render_backends, 16);
+    const uint64_t rb_mask = info->enabled_rb_mask;
+ 
++   if (info->has_kernel_raster_config)
++      return;
++
+    if (!rb_mask || util_bitcount64(rb_mask) >= num_rb) {
+       /* Always use the default config when all backends are enabled
+        * (or when we failed to determine the enabled backends).
+diff --git a/src/amd/common/ac_gpu_info.h b/src/amd/common/ac_gpu_info.h
+index 50f0a34..330bed1 100644
+--- a/src/amd/common/ac_gpu_info.h
++++ b/src/amd/common/ac_gpu_info.h
+@@ -502,6 +502,9 @@ struct radeon_info {
+    uint32_t spi_cu_en;
+ 
+    /* Raster config. */
++   /* PA_SC_RASTER_CONFIG is the kernel's to set: the context CLEAR_STATE gives
++    * a submission holds it, and the driver leaves it alone (the PS4). */
++   bool has_kernel_raster_config;
+    uint32_t pa_sc_raster_config;
+    uint32_t pa_sc_raster_config_1;
+    uint32_t se_tile_repeat;
+-- 
+2.43.0
+

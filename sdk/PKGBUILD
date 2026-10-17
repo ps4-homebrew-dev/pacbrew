@@ -1,0 +1,25 @@
+pkgname=ps4-homebrew-sdk
+pkgver=git
+pkgrel=1
+pkgdesc="An SDK for PS4 homebrew"
+arch=('any')
+license=('GPLv3')
+url="https://github.com/ps4-homebrew-dev/sdk"
+source=("git+ssh://git@192.168.1.22:/home/git/repos/ps4-homebrew/sdk.git")
+sha256sums=('SKIP')
+groups=('ps4-homebrew-dev')
+options=(!strip staticlibs)
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    make -C sdk
+}
+
+package() {
+    make -C sdk install DESTDIR="${pkgdir}/${PS4_HOMEBREW_SDK}"
+}

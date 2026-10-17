@@ -1,0 +1,42 @@
+From 8f1862a185497050705f0bf6f41ed02f4b13ffc6 Mon Sep 17 00:00:00 2001
+From: Claude <noreply@anthropic.com>
+Date: Sat, 17 Oct 2026 08:33:55 +0000
+Subject: [PATCH 32/32] radv/ps4: the shader cache in the title's folder
+
+As on the PS5, RADV keeps its compiled pipelines in /app0/radv-shader-cache,
+in the database form, unless the title sets MESA_SHADER_CACHE_DIR or
+MESA_DISK_CACHE_DATABASE itself.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01KvB274h9yAsuA8U9fnRoFR
+---
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.c | 6 ++++++
+ 1 file changed, 6 insertions(+)
+
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+index b45601a..98e3cc5 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+@@ -8,6 +8,7 @@
+ 
+ #include <errno.h>
+ #include <stdio.h>
++#include <stdlib.h>
+ #include <string.h>
+ 
+ #include "c11/threads.h"
+@@ -143,6 +144,11 @@ static bool radv_ps4_neo;
+ static bool
+ radv_ps4_platform_once(void)
+ {
++   /* RADV's shader cache in the title's own folder, in the database form, as
++    * on the PS5. A title may choose otherwise, as on Linux. */
++   setenv("MESA_SHADER_CACHE_DIR", "/app0/radv-shader-cache", 0);
++   setenv("MESA_DISK_CACHE_DATABASE", "1", 0);
++
+    void *window = NULL;
+    int err = sceKernelReserveVirtualRange(&window, RADV_PS4_WINDOW_BYTES, 0, RADV_PS4_WINDOW_BYTES);
+    if (err) {
+-- 
+2.43.0
+
