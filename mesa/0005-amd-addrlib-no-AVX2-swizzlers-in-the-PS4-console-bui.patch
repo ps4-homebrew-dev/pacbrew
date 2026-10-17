@@ -1,0 +1,32 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sat, 17 Oct 2026 15:34:59 +0000
+Subject: [PATCH 05/13] amd/addrlib: no AVX2 swizzlers in the PS4 console build
+
+The PS4's CPU (Jaguar) has AVX but no AVX2, and clang declares only the
+intrinsics of the features a Sony target compiles for, so
+addrswizzler.cpp's [[gnu::target("avx2")]] functions do not compile
+there. The console build leaves AddrLib's SIMD paths out.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
+---
+ src/amd/addrlib/meson.build | 5 ++++-
+ 1 file changed, 4 insertions(+), 1 deletion(-)
+
+diff --git a/src/amd/addrlib/meson.build b/src/amd/addrlib/meson.build
+index 4f673b4..f113e00 100644
+--- a/src/amd/addrlib/meson.build
++++ b/src/amd/addrlib/meson.build
+@@ -49,7 +49,10 @@ files_addrlib = files(
+ )
+ 
+ # Skip the addrlib definition of ADDR_FASTCALL so as not to use regparm.
+-cpp_args_addrlib = ['-DADDR_FASTCALL=', '-DADDR_ALLOW_SIMD=1']
++# The PS4's CPU (Jaguar) has no AVX2, and its compiler declares only the
++# intrinsics of the features it targets, so the AVX2 swizzlers are left out.
++cpp_args_addrlib = ['-DADDR_FASTCALL=',
++                    '-DADDR_ALLOW_SIMD=@0@'.format(with_radv_ps4_console ? 0 : 1)]
+ 
+ if host_machine.endian() == 'little'
+   cpp_args_addrlib += '-DLITTLEENDIAN_CPU'

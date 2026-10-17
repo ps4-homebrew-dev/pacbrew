@@ -1,0 +1,351 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sat, 17 Oct 2026 15:34:58 +0000
+Subject: [PATCH 01/13] meson, amd: a radv-winsys option, and AMD builds
+ without DRM
+
+-Dradv-winsys selects the kernel interface RADV allocates memory and
+submits through: amdgpu (Linux DRM, the default) or ps4 (the PlayStation
+4's Gnm driver, which a later patch adds).
+
+The PS4 has no DRM and its libc no libdrm, so the ps4 console build does
+not look for either. AMD_NO_DRM marks the code the Windows port already
+keeps away from DRM -- the DRM fourcc and tiling definitions, the
+drmGetCap/drmGetDevice2 stubs in ac_gpu_info.c, ac_linux_drm.c, the DRM
+node bookkeeping of the physical device, the umr ring dump -- and
+headless swapchains use CPU images without libdrm. A Linux host build of
+the PS4 winsys keeps DRM for the rest of Mesa.
+
+Co-authored-by: Mihawk <163614687+mihawk-99@users.noreply.github.com>
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
+---
+ meson.build                            | 24 +++++++++++++++++++++++-
+ meson.options                          | 10 ++++++++++
+ src/amd/common/ac_drm_fourcc.h         |  9 +++++++--
+ src/amd/common/ac_gpu_info.c           |  7 ++++++-
+ src/amd/common/ac_linux_drm.h          | 10 +++++-----
+ src/amd/common/ac_surface.c            |  2 +-
+ src/amd/common/meson.build             |  2 +-
+ src/amd/vulkan/radv_physical_device.c  | 12 ++++++------
+ src/amd/vulkan/radv_physical_device.h  |  4 ++--
+ src/amd/vulkan/tools/radv_debug_hang.c |  2 +-
+ src/vulkan/wsi/wsi_common_headless.c   |  8 ++++++++
+ 11 files changed, 70 insertions(+), 20 deletions(-)
+
+diff --git a/meson.build b/meson.build
+index d6e3a8b..104ca03 100644
+--- a/meson.build
++++ b/meson.build
+@@ -339,6 +339,13 @@ if freedreno_kmds.length() != 0 and freedreno_kmds != [ 'msm' ] and with_freedre
+   endif
+ endif
+ 
++# RADV on the PlayStation 4 reaches the GPU through Gnm, beside a FreeBSD-based
++# libc that has no DRM, so nothing may look for libdrm there. (A Linux host
++# build of the same winsys keeps DRM for the rest of Mesa.)
++if _vulkan_drivers.contains('amd') and get_option('radv-winsys') == 'ps4' and host_machine.system() != 'linux'
++  system_has_kms_drm = false
++endif
++
+ # This has to be below the freedreno_kmds check since that can change system_has_kms_drm
+ with_gallium_kmsro = with_gallium_drm or (system_has_kms_drm and with_gallium_zink)
+ 
+@@ -488,6 +495,21 @@ with_platform_haiku = _platforms.contains('haiku')
+ with_platform_windows = _platforms.contains('windows')
+ with_platform_macos = _platforms.contains('macos')
+ 
++# RADV on the PlayStation 4: no DRM device, no libdrm, a winsys of its own
++# (src/amd/vulkan/winsys/ps4). AMD_NO_DRM marks the code the Windows port
++# already keeps away from DRM, which the PS4 build has to skip the same way.
++with_radv_ps4 = with_amd_vk and get_option('radv-winsys') == 'ps4'
++amd_no_drm = with_platform_windows or with_radv_ps4
++if amd_no_drm
++  pre_args += '-DAMD_NO_DRM'
++endif
++if with_radv_ps4
++  pre_args += '-DRADV_PS4'
++endif
++# The console build, as opposed to a Linux host build of the PS4 winsys, which
++# models the console on a PC.
++with_radv_ps4_console = with_radv_ps4 and host_machine.system() != 'linux'
++
+ with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
+ if with_gfxstream_emulated_android
+   # When building the android_stub with a non-Bionic sysroot/target, we to have
+@@ -1897,7 +1919,7 @@ _drm_ver = '2.4.109'
+ 
+ _libdrm_checks = [
+   ['intel', with_gallium_i915],
+-  ['amdgpu', (with_amd_vk and not with_platform_windows) or with_gallium_radeonsi],
++  ['amdgpu', (with_amd_vk and not amd_no_drm) or with_gallium_radeonsi],
+ ]
+ 
+ # Loop over the enables versions and get the highest libdrm requirement for all
+diff --git a/meson.options b/meson.options
+index 93a60e3..9f84266 100644
+--- a/meson.options
++++ b/meson.options
+@@ -751,6 +751,16 @@ option(
+   description : 'build gallium d3d12 with graphics pipeline support.',
+ )
+ 
++option(
++  'radv-winsys',
++  type : 'combo',
++  value : 'amdgpu',
++  choices : ['amdgpu', 'ps4'],
++  description : 'The kernel interface RADV allocates memory and submits ' +
++                'through: amdgpu (Linux DRM) or ps4 (the PlayStation 4 ' +
++                'Gnm driver, reached through its exported functions).'
++)
++
+ option(
+   'radv-build-id',
+   type : 'string',
+diff --git a/src/amd/common/ac_drm_fourcc.h b/src/amd/common/ac_drm_fourcc.h
+index 9ef1406..7367885 100644
+--- a/src/amd/common/ac_drm_fourcc.h
++++ b/src/amd/common/ac_drm_fourcc.h
+@@ -7,14 +7,19 @@
+ #ifndef AC_DRM_FOURCC_H
+ #define AC_DRM_FOURCC_H
+ 
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(AMD_NO_DRM)
+ #include <stdint.h>
++/* Linux headers define __u64; elsewhere it is this. */
++#if defined(__linux__)
++#include <linux/types.h>
++#else
+ typedef uint64_t __u64;
++#endif
+ #define DRM_FORMAT_MOD_VENDOR_NONE    0
+ #define DRM_FORMAT_MOD_VENDOR_AMD     0x02
+ #define DRM_FORMAT_RESERVED	      ((1ULL << 56) - 1)
+ #define fourcc_mod_code(vendor, val) \
+-	((((__u64)DRM_FORMAT_MOD_VENDOR_## vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
++	((((uint64_t)DRM_FORMAT_MOD_VENDOR_## vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
+ #define DRM_FORMAT_MOD_INVALID	fourcc_mod_code(NONE, DRM_FORMAT_RESERVED)
+ #define DRM_FORMAT_MOD_LINEAR	fourcc_mod_code(NONE, 0)
+ #define AMD_FMT_MOD fourcc_mod_code(AMD, 0)
+diff --git a/src/amd/common/ac_gpu_info.c b/src/amd/common/ac_gpu_info.c
+index 6e4c0b0..837af8c 100644
+--- a/src/amd/common/ac_gpu_info.c
++++ b/src/amd/common/ac_gpu_info.c
+@@ -30,7 +30,8 @@
+ #define ASICREV_IS_MI200(r)      ASICREV_IS(r, MI200)
+ #define ASICREV_IS_GFX940(r)     ASICREV_IS(r, GFX940)
+ 
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(AMD_NO_DRM)
++#include <errno.h>
+ static int drmGetCap(int fd, uint64_t capability, uint64_t *value)
+ {
+    return -EINVAL;
+@@ -42,10 +43,14 @@ static int drmGetDevice2(int fd, uint32_t flags, drmDevicePtr *device)
+ {
+    return -ENODEV;
+ }
++#ifdef _WIN32
+ static intptr_t readlink(const char *path, char *buf, size_t bufsiz)
+ {
+    return -1;
+ }
++#else
++#include <unistd.h>
++#endif
+ static char *
+ drmGetFormatModifierName(uint64_t modifier)
+ {
+diff --git a/src/amd/common/ac_linux_drm.h b/src/amd/common/ac_linux_drm.h
+index 3843b25..9fd8f3e 100644
+--- a/src/amd/common/ac_linux_drm.h
++++ b/src/amd/common/ac_linux_drm.h
+@@ -9,7 +9,7 @@
+ #include <stdbool.h>
+ #include <stdint.h>
+ 
+-#if !defined(_WIN32)
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+ #include "drm-uapi/amdgpu_drm.h"
+ #include "amdgpu.h"
+ #else
+@@ -318,14 +318,14 @@ struct drm_amdgpu_userq_wait;
+ struct amdgpu_va;
+ typedef struct amdgpu_va *amdgpu_va_handle;
+ 
+-#endif /* !defined(_WIN32) */
++#endif /* !defined(_WIN32) && !defined(AMD_NO_DRM) */
+ 
+ #ifdef __cplusplus
+ extern "C" {
+ #endif
+ 
+-/* All functions are static inline stubs on Windows. */
+-#ifdef _WIN32
++/* All functions are static inline stubs without DRM (Windows, the PS4). */
++#if defined(_WIN32) || defined(AMD_NO_DRM)
+ #define __U_STUB__
+ #endif
+ #include "util/u_stub.h"
+@@ -336,7 +336,7 @@ struct util_sync_provider;
+ struct radeon_info;
+ 
+ typedef union ac_drm_bo {
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(AMD_NO_DRM)
+    void *abo;
+ #else
+    amdgpu_bo_handle abo;
+diff --git a/src/amd/common/ac_surface.c b/src/amd/common/ac_surface.c
+index 9eed327..624d55c 100644
+--- a/src/amd/common/ac_surface.c
++++ b/src/amd/common/ac_surface.c
+@@ -23,7 +23,7 @@
+ #include <stdio.h>
+ #include <stdlib.h>
+ 
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(AMD_NO_DRM)
+ #define AMDGPU_TILING_ARRAY_MODE_SHIFT			0
+ #define AMDGPU_TILING_ARRAY_MODE_MASK			0xf
+ #define AMDGPU_TILING_PIPE_CONFIG_SHIFT			4
+diff --git a/src/amd/common/meson.build b/src/amd/common/meson.build
+index d0ff6c7..d83b22d 100644
+--- a/src/amd/common/meson.build
++++ b/src/amd/common/meson.build
+@@ -198,7 +198,7 @@ if with_gfx_compute
+   )
+ endif
+ 
+-if not with_platform_windows
++if not amd_no_drm
+   amd_common_files += files(
+     'ac_linux_drm.c',
+   )
+diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
+index e23d375..fe39667 100644
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -34,7 +34,7 @@
+ #include "radv_video.h"
+ #include "radv_wsi.h"
+ 
+-#ifdef _WIN32
++#if defined(_WIN32) || defined(AMD_NO_DRM)
+ typedef void *drmDevicePtr;
+ #else
+ #include "drm-uapi/amdgpu_drm.h"
+@@ -904,7 +904,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .EXT_nested_command_buffer = true,
+       .EXT_non_seamless_cube_map = true,
+       .EXT_pci_bus_info = true,
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+       .EXT_physical_device_drm = true,
+ #endif
+       .EXT_pipeline_creation_cache_control = true,
+@@ -2135,7 +2135,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
+           */
+          pdev->info.family != CHIP_NAVI21 && pdev->info.family != CHIP_NAVI22 && pdev->info.family != CHIP_VANGOGH,
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+       /* VK_EXT_pci_bus_info */
+       .pciDomain = pdev->bus_info.domain,
+       .pciBus = pdev->bus_info.bus,
+@@ -2473,7 +2473,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
+    p->identicalMemoryTypeRequirements = false;
+ 
+    /* VK_EXT_physical_device_drm */
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+    if (pdev->available_nodes & (1 << DRM_NODE_PRIMARY)) {
+       p->drmHasPrimary = true;
+       p->drmPrimaryMajor = (int64_t)major(pdev->primary_devid);
+@@ -2878,7 +2878,7 @@ fail_fd:
+ VkResult
+ create_drm_physical_device(struct vk_instance *vk_instance, struct _drmDevice *device, struct vk_physical_device **out)
+ {
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+    bool supported_device = false;
+ 
+    if (!(device->available_nodes & (1 << DRM_NODE_RENDER)))
+@@ -2919,7 +2919,7 @@ radv_physical_device_destroy(struct vk_physical_device *vk_device)
+    if (pdev->wsi_syncobj_fd != -1)
+       close(pdev->wsi_syncobj_fd);
+    simple_mtx_destroy(&pdev->drm_device_mtx);
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+    if (pdev->drm_device)
+       ac_drm_device_deinitialize(pdev->drm_device);
+ #endif
+diff --git a/src/amd/vulkan/radv_physical_device.h b/src/amd/vulkan/radv_physical_device.h
+index b2b681c..3e88dda 100644
+--- a/src/amd/vulkan/radv_physical_device.h
++++ b/src/amd/vulkan/radv_physical_device.h
+@@ -28,7 +28,7 @@
+ #include "vk_sync.h"
+ #include "vk_sync_timeline.h"
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+ #include <xf86drm.h>
+ #endif
+ 
+@@ -151,7 +151,7 @@ struct radv_physical_device {
+    /* Bitmask of memory types that are protected. */
+    uint32_t memory_types_protected;
+ 
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+    int available_nodes;
+    drmPciBusInfo bus_info;
+ 
+diff --git a/src/amd/vulkan/tools/radv_debug_hang.c b/src/amd/vulkan/tools/radv_debug_hang.c
+index 0e1a989..9005bdd 100644
+--- a/src/amd/vulkan/tools/radv_debug_hang.c
++++ b/src/amd/vulkan/tools/radv_debug_hang.c
+@@ -878,7 +878,7 @@ radv_dump_device_name(const struct radv_device *device, FILE *f)
+ static void
+ radv_dump_umr_ring(const struct radv_queue *queue, FILE *f)
+ {
+-#ifndef _WIN32
++#if !defined(_WIN32) && !defined(AMD_NO_DRM)
+    const struct radv_device *device = radv_queue_device(queue);
+    const struct radv_physical_device *pdev = radv_device_physical(device);
+    const enum amd_ip_type ring = radv_queue_ring(queue);
+diff --git a/src/vulkan/wsi/wsi_common_headless.c b/src/vulkan/wsi/wsi_common_headless.c
+index 23b375f..b84d482 100644
+--- a/src/vulkan/wsi/wsi_common_headless.c
++++ b/src/vulkan/wsi/wsi_common_headless.c
+@@ -489,12 +489,19 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+ 
+    struct wsi_base_image_params *image_params = NULL;
+    struct wsi_cpu_image_params cpu_params;
++#ifdef HAVE_LIBDRM
+    struct wsi_drm_image_params drm_params;
++#endif
++   /* Without libdrm there are no DRM images: a hardware driver's images are
++    * blitted to a host buffer, as a software one's are presented. */
++#ifdef HAVE_LIBDRM
+    if (wsi_device->sw) {
++#endif
+       cpu_params = (struct wsi_cpu_image_params) {
+          .base.image_type = WSI_IMAGE_TYPE_CPU,
+       };
+       image_params = &cpu_params.base;
++#ifdef HAVE_LIBDRM
+    } else {
+       drm_params = (struct wsi_drm_image_params) {
+          .base.image_type = WSI_IMAGE_TYPE_DRM,
+@@ -505,6 +512,7 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
+       };
+       image_params = &drm_params.base;
+    }
++#endif
+ 
+    result = wsi_swapchain_init(wsi_device, &chain->base, device,
+                                pCreateInfo, image_params, pAllocator);
