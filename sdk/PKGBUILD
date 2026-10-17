@@ -5,7 +5,7 @@ pkgdesc="An SDK for PS4 homebrew"
 arch=('any')
 license=('GPLv3')
 url="https://github.com/ps4-homebrew-dev/sdk"
-source=("git+ssh://git@192.168.1.22:/home/git/repos/ps4-homebrew/sdk.git")
+source=("git+https://github.com/ps4-homebrew-dev/sdk.git")
 sha256sums=('SKIP')
 groups=('ps4-homebrew-dev')
 options=(!strip staticlibs)
@@ -14,6 +14,11 @@ prepare() {
     if [ -z "${PS4_HOMEBREW_SDK}" ]; then
 	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
     fi
+}
+
+pkgver() {
+    cd sdk
+    git describe --tags --long | sed 's/^[^0-9]*//; s/\([^-]*-g\)/r\1/; s/-/./g'
 }
 
 build() {
