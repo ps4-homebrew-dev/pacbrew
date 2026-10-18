@@ -3,7 +3,15 @@
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
 
-PKGS=(sdk zlib libcxx mesa vulkan-headers)
+PKGS=(sdk openlibm zlib libcxx bzip2 dht enet expat faad2
+      fast_float fmt freetype fontconfig giflib glm harfbuzz jansson lame
+      lexbor libb64 libconfig libdeflate libfribidi libass libiconv libmad
+      libmicrodns libmicrohttpd libminizip libmodplug libmpeg2 libnatpmp
+      libnfs libogg flac libpng libpsl libsamplerate libsmb2 libsodium
+      libtheora libutp libvorbis libyuv lz4 miniupnpc mpg123 a52dec
+      json-c libevent libjpeg-turbo libquickjs libvpx libwebp lua luajit
+      openssl curl libssh libssh2 opus libsndfile sqlite tinyxml2 xz file
+      libxml2 yaml-cpp zstd libarchive libzip mesa vulkan-headers)
 
 sudo pacman --noconfirm --remove ps4-homebrew-dev
 

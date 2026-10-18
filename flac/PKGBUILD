@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-flac
+pkgver=1.4.3
+pkgrel=1
+pkgdesc='Free Lossless Audio Codec'
+url='https://xiph.org/flac/'
+arch=('any')
+license=('BSD' 'GPL')
+source=(https://github.com/xiph/flac/releases/download/${pkgver}/flac-${pkgver}.tar.xz)
+sha256sums=('6c58e69cd22348f441b861092b825e591d0b822e106de6eb0ee4d05d27205b70')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-libogg')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd flac-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--enable-cpplibs \
+		--disable-thorough-tests --disable-ogg
+
+    ${MAKE} -C src/libFLAC
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd flac-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C src/libFLAC install
+    ${MAKE} -C include/FLAC install
+    ${MAKE} -C include/FLAC++ install
+}

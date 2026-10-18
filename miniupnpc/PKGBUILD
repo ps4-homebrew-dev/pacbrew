@@ -1,0 +1,38 @@
+pkgname=ps4-homebrew-miniupnpc
+pkgver=2.2.4
+pkgrel=1
+pkgdesc='Small UPnP client library/tool to access Internet Gateway Devices'
+url='https://miniupnp.tuxfamily.org/'
+arch=('any')
+license=('BSD')
+options=(!strip !libtool staticlibs)
+source=(https://miniupnp.tuxfamily.org/files/miniupnpc-${pkgver}.tar.gz)
+sha256sums=('481a5e4aede64e9ef29895b218836c3608d973e77a35b4f228ab1f3629412c4b')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd miniupnpc-${pkgver}
+    sed -i 's|$(shell $(CC) -dumpmachine)|x86_64-pc-freebsd|g' Makefile
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd miniupnpc-${pkgver}
+
+    export INSTALLPREFIX="${PREFIX}"
+    ${MAKE} build/libminiupnpc.a build/miniupnpc.pc
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd miniupnpc-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install OS=amiga # :D
+}

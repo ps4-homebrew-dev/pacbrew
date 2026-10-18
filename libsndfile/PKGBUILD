@@ -1,0 +1,42 @@
+pkgname=ps4-homebrew-libsndfile
+pkgver=1.2.2
+pkgrel=1
+pkgdesc="A C library for reading and writing files containing sampled audio data"
+arch=('any')
+url="https://libsndfile.github.io/libsndfile/"
+license=(LGPL-2.1-or-later)
+source=("https://github.com/libsndfile/libsndfile/releases/download/$pkgver/libsndfile-$pkgver.tar.xz")
+sha256sums=('3799ca9924d3125038880367bf1468e53a1b7e3686a934f098b7e1d286cdb80e')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-flac'
+	 'ps4-homebrew-lame'
+	 'ps4-homebrew-libogg'
+	 'ps4-homebrew-libvorbis'
+	 'ps4-homebrew-mpg123'
+	 'ps4-homebrew-opus')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libsndfile-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-full-suite
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libsndfile-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

@@ -1,0 +1,41 @@
+pkgname=ps4-homebrew-libmodplug
+pkgver=0.8.9.0
+pkgrel=0
+pkgdesc='A MOD playing library'
+arch=('any')
+url='http://modplug-xmms.sourceforge.net'
+license=('LicenseRef-PublicDomain')
+source=("https://downloads.sourceforge.net/modplug-xmms/libmodplug-${pkgver}.tar.gz")
+sha256sums=('457ca5a6c179656d66c01505c0d95fafaead4329b9dbaa0f997d00a3508ad9de')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd libmodplug-$pkgver
+    sed -i 's|-ffast-math||g' configure.ac
+    sed -i 's|-lstdc++|-lc++|g' libmodplug.pc.in
+    autoreconf -vfi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libmodplug-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		CXXFLAGS=-std=c++11
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libmodplug-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

@@ -1,0 +1,36 @@
+pkgname=ps4-homebrew-libwebp
+pkgver=1.4.0
+pkgrel=1
+pkgdesc='WebP is a modern image format that provides superior lossless and lossy compression for images on the web.'
+arch=('any')
+url='https://developers.google.com/speed/webp/'
+license=('BSD')
+options=(!strip !libtool staticlibs)
+source=("https://storage.googleapis.com/downloads.webmproject.org/releases/webp/libwebp-$pkgver.tar.gz")
+sha256sums=('61f873ec69e3be1b99535634340d5bde750b2e4447caa1db9f61be3fd49ab1e5')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-openlibm')
+depends=('ps4-homebrew-zlib')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libwebp-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libwebp-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

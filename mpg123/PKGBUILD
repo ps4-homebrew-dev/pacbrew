@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-mpg123
+pkgver=1.32.7
+pkgrel=1
+pkgdesc='Console based real time MPEG Audio Player for Layer 1, 2 and 3'
+url='https://mpg123.de'
+arch=('any')
+license=('LGPL2.1')
+source=("https://downloads.sourceforge.net/sourceforge/mpg123/mpg123-${pkgver}.tar.bz2")
+sha256sums=('3c8919243707951cac0e3c39bbf28653bcaffc43c98ff16801a27350db8f0f21')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd mpg123-${pkgver}
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-components --enable-libmpg123
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd mpg123-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}
+

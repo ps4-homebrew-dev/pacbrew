@@ -1,0 +1,35 @@
+pkgname=ps4-homebrew-openssl
+pkgver=3.5.2
+pkgrel=1
+pkgdesc='The Open Source toolkit for Secure Sockets Layer and Transport Layer Security'
+url='https://www.openssl.org'
+license=('Apache-2.0')
+arch=('any')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/openssl/openssl/releases/download/openssl-${pkgver}/openssl-${pkgver}.tar.gz")
+sha256sums=('c53a47e5e441c930c3928cf7bf6fb00e5d129b630e0aa873b08258656e7345ec')
+
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd openssl-$pkgver
+
+    ./Configure BSD-x86_64 no-tests no-apps no-shared -static --prefix="${PREFIX}"
+    ${MAKE} build_sw
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd openssl-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install_sw DESTDIR=$DESTDIR
+}

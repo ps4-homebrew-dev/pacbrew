@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-libpng
+pkgver=1.6.43
+pkgrel=1
+pkgdesc='PNG format graphic files library'
+arch=('any')
+url='http://www.libpng.org'
+license=('custom')
+options=(!strip !libtool staticlibs)
+source=("https://download.sourceforge.net/libpng/libpng-$pkgver.tar.xz")
+sha256sums=('6a5ca0652392a2d7c9db2ae5b40210843c0bbc081cbd410825ab00cc59f14a6c')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-zlib')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libpng-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-tests
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libpng-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

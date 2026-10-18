@@ -1,0 +1,36 @@
+pkgname=ps4-homebrew-tinyxml2
+pkgver=11.0.0
+pkgrel=1
+pkgdesc='A simple, small, efficient, C++ XML parser that can be easily integrated into other programs'
+arch=('any')
+url='http://leethomason.github.io/tinyxml2/'
+license=('apache')
+options=(!strip !libtool staticlibs)
+source=( "https://github.com/leethomason/tinyxml2/archive/${pkgver}.tar.gz" )
+sha256sums=('5556deb5081fb246ee92afae73efd943c889cef0cafea92b0b82422d6a18f289')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd tinyxml2-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd tinyxml2-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

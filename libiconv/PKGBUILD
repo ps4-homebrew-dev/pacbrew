@@ -1,0 +1,35 @@
+pkgname=ps4-homebrew-libiconv
+pkgver=1.17
+pkgrel=1
+pkgdesc='GNU charset conversion library'
+arch=('any')
+url='http://www.gnu.org/software/libiconv/'
+license=('LGPL')
+options=(!strip !libtool staticlibs)
+source=("https://ftp.gnu.org/pub/gnu/libiconv/libiconv-$pkgver.tar.gz")
+sha256sums=('8f74213b56238c85a50a5329f77e06198771e70dd9a739779f4c02f65d971313')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libiconv-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libiconv-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

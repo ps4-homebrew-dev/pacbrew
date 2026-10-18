@@ -1,0 +1,48 @@
+pkgname=ps4-homebrew-libmicrodns
+pkgver=0.2.0.r30.g02ad4cb
+pkgrel=1
+pkgdesc='Minimal mDNS resolver library'
+url='https://github.com/videolabs/libmicrodns'
+arch=('any')
+license=('LGPL2.1')
+
+options=(!strip !libtool staticlibs)
+source=('git+https://github.com/videolabs/libmicrodns.git'
+	'add-SO_REUSEPORT-for-multicast-compatibility.patch'
+	'avoid-using-MCAST_JOIN_GROUP-when-possible.patch')
+sha256sums=('SKIP'
+	    '6c5d614a7f4f773f7e3940a0f45dc6625a7d1784ba9039c59a0d5a6b92078b14'
+	    '627bb64dbb31d7f0346880f54e199bc3ac5b3b3c9693d82c7f231f181cda98cf')
+
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd libmicrodns
+    patch -p1 < $srcdir/add-SO_REUSEPORT-for-multicast-compatibility.patch
+    patch -p1 < $srcdir/avoid-using-MCAST_JOIN_GROUP-when-possible.patch
+}
+
+pkgver() {
+    cd libmicrodns
+    git describe --tags --long | sed 's/^[^0-9]*//; s/\([^-]*-g\)/r\1/; s/-/./g'
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libmicrodns
+
+    ${MESON} setup --prefix="${PREFIX}" builddir
+    ${MESON} compile -vC builddir
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libmicrodns
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
+}

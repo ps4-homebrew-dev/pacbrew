@@ -1,0 +1,35 @@
+pkgname=ps4-homebrew-fontconfig
+pkgver=2.15.0
+pkgrel=1
+pkgdesc="Library for configuring and customizing font access"
+url='https://www.freedesktop.org/wiki/Software/fontconfig'
+arch=('any')
+license=('custom')
+options=(!strip !libtool staticlibs)
+source=("https://www.freedesktop.org/software/fontconfig/release/fontconfig-$pkgver.tar.gz")
+sha256sums=('SKIP')
+groups=('ps4-homebrew-dev')
+depends=('ps4-homebrew-freetype' 'ps4-homebrew-expat')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd fontconfig-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--with-default-fonts="/preinst/common/font,/system_ex/common_ex/font2,${PREFIX}/share/fonts"
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd fontconfig-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

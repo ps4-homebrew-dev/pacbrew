@@ -1,0 +1,49 @@
+pkgname=ps4-homebrew-curl
+pkgver=8.18.0
+pkgrel=1
+pkgdesc='An URL retrieval utility and library'
+arch=('any')
+url='https://curl.haxx.se'
+license=('curl')
+source=("https://curl.haxx.se/download/curl-${pkgver}.tar.xz")
+sha256sums=('SKIP')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd curl-$pkgver
+    sed -i 's|define USE_XATTR| |g' src/tool_xattr.h
+    autoreconf -fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd curl-$pkgver
+
+    # Fetch CA bundle
+    ./scripts/mk-ca-bundle.pl
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--with-openssl --without-libpsl \
+		--with-ca-bundle="${PREFIX}/etc/ca-bundle.crt" \
+		--disable-docs
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd curl-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+
+    mkdir -p "${DESTDIR}/${PREFIX}/etc"
+    cp ca-bundle.crt "${DESTDIR}/${PREFIX}/etc"
+}

@@ -1,0 +1,36 @@
+pkgname=ps4-homebrew-libconfig
+pkgver=1.7.3
+pkgrel=1
+pkgdesc='C/C++ Configuration File Library'
+arch=('any')
+url='https://www.hyperrealm.com/libconfig/libconfig.html'
+license=('LGPL')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/hyperrealm/libconfig/releases/download/v$pkgver/libconfig-$pkgver.tar.gz")
+sha256sums=('545166d6cac037744381d1e9cc5a5405094e7bfad16a411699bcff40bbb31ee7')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libconfig-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-examples --disable-doc
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libconfig-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

@@ -1,0 +1,34 @@
+pkgname=ps4-homebrew-libnatpmp
+pkgver=20230423
+pkgrel=1
+pkgdesc='A portable and fully compliant implementation of the NAT-PMP protocol'
+arch=('any')
+url='http://miniupnp.free.fr/libnatpmp.html'
+license=(BSD)
+options=(!strip !libtool staticlibs)
+source=("https://miniupnp.tuxfamily.org/files/libnatpmp-$pkgver.tar.gz")
+sha256sums=('0684ed2c8406437e7519a1bd20ea83780db871b3a3a5d752311ba3e889dbfc70')
+
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libnatpmp-$pkgver
+    ${MAKE} CC=${CC} libnatpmp.a
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libnatpmp-$pkgver
+
+    install -Dm 644 natpmp.h -t "${pkgdir}/${SYSROOT}/${PREFIX}/include"
+    install -Dm 644 natpmp_declspec.h -t "${pkgdir}/${SYSROOT}/${PREFIX}/include"
+    install -Dm 644 libnatpmp.a -t "${pkgdir}/${SYSROOT}/${PREFIX}/lib"
+}

@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-expat
+pkgver=2.6.2
+pkgrel=1
+pkgdesc="An XML parser library"
+arch=('any')
+url="https://libexpat.github.io"
+license=('MIT')
+options=(!strip !libtool staticlibs)
+source=(https://github.com/libexpat/libexpat/releases/download/R_${pkgver//./_}/expat-$pkgver.tar.bz2)
+sha256sums=('9c7c1b5dcbc3c237c500a8fb1493e14d9582146dd9b42aa8d3ffb856a3b927e0')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd expat-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--without-xmlwf
+    ${MAKE}
+}
+
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd expat-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

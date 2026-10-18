@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-sqlite
+pkgver=3.52.0
+pkgrel=1
+pkgdesc="A C library that implements an SQL database engine"
+arch=('any')
+license=('LicenseRef-Sqlite')
+url="https://www.sqlite.org/"
+options=(!strip !libtool staticlibs)
+source=(https://www.sqlite.org/2026/sqlite-src-3520000.zip)
+sha256sums=('652a98ca833ed638809a52bec225a7f37799f71a995778f9ccb68ad03bd1fc11')
+makedepends=('ps4-homebrew-sdk')
+
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd sqlite-src-3520000
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared --disable-tcl
+    ${MAKE} sqlite3.h libsqlite3.a sqlite3.pc CFLAGS=-Dfdatasync=fsync
+}
+
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd sqlite-src-3520000
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+
+    ${MAKE} install-lib install-pc
+    install -d "${DESTDIR}/${PREFIX}/include/"
+    install -m 0644 sqlite3.h "${DESTDIR}/${PREFIX}/include/"
+}

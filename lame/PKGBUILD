@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-lame
+pkgver=3.100
+pkgrel=1
+pkgdesc='A high quality MPEG Audio Layer III (MP3) encoder'
+arch=('any')
+url='http://lame.sourceforge.net'
+license=('LGPL')
+source=("https://downloads.sourceforge.net/lame/lame-$pkgver.tar.gz")
+sha256sums=('ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd lame-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-frontend --enable-nasm
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd lame-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}
+

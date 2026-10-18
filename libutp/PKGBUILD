@@ -1,0 +1,42 @@
+pkgname=ps4-homebrew-libutp
+pkgver=r207.490874c
+pkgrel=1
+pkgdesc='uTorrent Transport Protocol library'
+url='https://github.com/bittorrent/libutp'
+arch=('any')
+license=('custom:Public Domain')
+options=(!strip !libtool staticlibs)
+source=(git+https://github.com/transmission/libutp.git)
+sha256sums=('SKIP')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+pkgver() {
+    cd libutp
+    printf "r%s.%s" "$(git rev-list --count HEAD)" "$(git rev-parse --short HEAD)"
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libutp
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DLIBUTP_BUILD_PROGRAMS=OFF \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libutp
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

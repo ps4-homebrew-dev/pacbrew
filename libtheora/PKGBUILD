@@ -1,0 +1,45 @@
+pkgname=ps4-homebrew-libtheora
+pkgver=1.1.1
+pkgrel=1
+pkgdesc='Standard encoder and decoder library for the Theora video compression format'
+arch=('any')
+url='https://www.theora.org/'
+license=('BSD-3-Clause')
+source=("http://downloads.xiph.org/releases/theora/libtheora-$pkgver.tar.bz2")
+sha256sums=('b6ae1ee2fa3d42ac489287d3ec34c5885730b1296f0801ae577a35193d3affbc')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-libogg')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libtheora-$pkgver
+
+    rm config.guess
+    autoreconf -vi -I m4
+}
+
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libtheora-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-examples
+    ${MAKE}
+}
+
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libtheora-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

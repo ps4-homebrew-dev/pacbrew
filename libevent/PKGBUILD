@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-libevent
+pkgver=2.1.13
+pkgrel=1
+pkgdesc="Event notification library"
+url="https://libevent.org/"
+arch=('any')
+license=('BSD')
+options=(!strip !libtool staticlibs)
+source=(https://github.com/libevent/libevent/releases/download/release-${pkgver}-stable/libevent-${pkgver}-stable.tar.gz)
+sha256sums=('f7e9383b8c0baa81b687e5b5eecc01beefaf1b19b64151d95ed61647fe7a315c')
+
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-zlib' 'ps4-homebrew-openlibm')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libevent-${pkgver}-stable
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-openssl
+    ${MAKE} V=1
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libevent-${pkgver}-stable
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

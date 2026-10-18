@@ -1,0 +1,32 @@
+pkgname=ps4-homebrew-harfbuzz
+pkgver=9.0.0
+pkgrel=1
+arch=('any')
+pkgdesc="OpenType text shaping engine"
+url="https://harfbuzz.github.io/"
+license=('MIT')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/harfbuzz/harfbuzz/releases/download/$pkgver/harfbuzz-$pkgver.tar.xz")
+sha256sums=('a41b272ceeb920c57263ec851604542d9ec85ee3030506d94662067c7b6ab89e')
+groups=('ps4-homebrew-dev')
+depends=('ps4-homebrew-freetype')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx')
+
+prepare() {
+    export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd harfbuzz-$pkgver
+
+    ${MESON} setup --prefix="${PREFIX}" builddir
+    ${MESON} compile -vC builddir
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd harfbuzz-$pkgver
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
+}

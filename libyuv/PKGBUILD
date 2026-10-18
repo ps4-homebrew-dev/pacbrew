@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-libyuv
+pkgver=r2828+ce488afb
+pkgrel=1
+pkgdesc="Library for YUV scaling"
+arch=('any')
+url="https://chromium.googlesource.com/libyuv/libyuv/"
+license=(custom)
+_commit=ce488afb7b1a1d9279ddeddb3fcade534d741c81
+source=(git+${url}#commit=${_commit}
+        0001-Do-not-build-shared-libraries.patch)
+sha256sums=(SKIP
+            cf48bab359274e3e27c392c0b194ec00d4b1b4e5bc1651251d80e4f7f75b6e03)
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+    patch -Np1 -d libyuv -i ../0001-Do-not-build-shared-libraries.patch
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libyuv
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -B build \
+	     -S .
+    ${MAKE} -C build yuv
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libyuv
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

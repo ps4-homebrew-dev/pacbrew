@@ -1,0 +1,43 @@
+pkgname=ps4-homebrew-libxml2
+pkgver=2.13.5
+pkgrel=1
+pkgdesc="XML C parser and toolkit"
+url="https://github.com/GNOME/libxml2"
+arch=('any')
+license=('MIT')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/GNOME/libxml2/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('87d681718760ba42e749a61482d71b34d1d566843e9ade39a73fea92caf8293b')
+groups=('ps4-homebrew-dev')
+depends=('ps4-homebrew-xz' 'ps4-homebrew-zlib')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libxml2-$pkgver
+
+    NOCONFIGURE=1 ./autogen.sh
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libxml2-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--without-python
+    ${MAKE} V=1
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libxml2-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+
+}

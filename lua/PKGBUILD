@@ -1,0 +1,32 @@
+pkgname=ps4-homebrew-lua
+pkgver=5.4.6
+pkgrel=1
+pkgdesc='Powerful lightweight programming language designed for extending applications'
+arch=('any')
+url='https://www.lua.org/'
+license=('MIT')
+options=(!strip !libtool staticlibs)
+source=("https://www.lua.org/ftp/lua-$pkgver.tar.gz")
+sha256sums=('7d5ea1b9cb6aa0b59ca3dde1c6adcb57ef83a1ba8e5432c0ecd06bf439b3ad88')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-openlibm')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd lua-$pkgver
+
+    ${MAKE} generic CC=${CC}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd lua-$pkgver
+
+    ${MAKE} install INSTALL_TOP="${pkgdir}/${SYSROOT}/${PREFIX}"
+}

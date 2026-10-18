@@ -1,0 +1,47 @@
+pkgname=ps4-homebrew-openal
+pkgver=1.24.3
+pkgrel=1
+pkgdesc='Cross-platform 3D audio library, software implementation'
+arch=('any')
+url='https://github.com/kcat/openal-soft'
+license=('LGPL-2.0-or-later')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/kcat/openal-soft/archive/refs/tags/$pkgver.tar.gz")
+sha256sums=('7e1fecdeb45e7f78722b776c5cf30bd33934b961d7fd2a11e0494e064cc631ce')
+
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-ffmpeg' 'ps4-homebrew-libsndfile'
+	     'ps4-homebrew-sdl2' 'ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd openal-soft-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DALSOFT_DLOPEN=NO \
+	     -DALSOFT_BACKEND_SDL2=YES \
+	     -DALSOFT_REQUIRE_SDL2=YES \
+	     -DALSOFT_BACKEND_WAVE=NO \
+	     -DALSOFT_BACKEND_OSS=NO \
+	     -DALSOFT_UTILS=NO \
+	     -DALSOFT_NO_CONFIG_UTIL=YES \
+	     -DALSOFT_EXAMPLES=NO \
+	     -DLIBTYPE="STATIC" \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd openal-soft-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

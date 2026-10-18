@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-libmpeg2
+pkgver=0.5.1
+pkgrel=1
+pkgdesc='Library for decoding MPEG-1 and MPEG-2 video streams'
+arch=('any')
+url='https://libmpeg2.sourceforge.io'
+license=('GPL-2.0-or-later')
+source=("https://download.videolan.org/pub/contrib/libmpeg2/libmpeg2-$pkgver.tar.gz")
+sha256sums=('dee22e893cb5fc2b2b6ebd60b88478ab8556cb3b93f9a0d7ce8f3b61851871d4')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd libmpeg2-$pkgver
+    autoreconf -fi
+}
+
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libmpeg2-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-sdl
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libmpeg2-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

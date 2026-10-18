@@ -1,0 +1,44 @@
+pkgname=ps4-homebrew-libzip
+pkgver=1.11.2
+pkgrel=1
+pkgdesc="C library for reading, creating, and modifying zip archives"
+url="https://libzip.org"
+license=('BSD')
+arch=('any')
+options=(!strip !libtool staticlibs)
+source=("${url}/download/libzip-${pkgver}.tar.xz")
+sha256sums=('5d471308cef4c4752bbcf973d9cd37ba4cb53739116c30349d4764ba1410dfc1')
+
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-zlib' 'ps4-homebrew-bzip2' 'ps4-homebrew-zstd'
+	 )
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libzip-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DHAVE_MEMCPY_S=NO \
+	     -DHAVE_STRNCPY_S=NO \
+	     -DHAVE_STRERRORLEN_S=NO \
+	     -DHAVE_STRERROR_S=NO \
+	     -DHAVE_FTS_OPEN=NO \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libzip-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

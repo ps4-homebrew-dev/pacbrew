@@ -1,0 +1,33 @@
+pkgname=ps4-homebrew-bzip2
+pkgver=1.0.8
+pkgrel=1
+pkgdesc="A high-quality data compression program"
+arch=('any')
+license=('BSD')
+url='https://sourceware.org/bzip2'
+options=(!strip !libtool staticlibs)
+source=(https://sourceware.org/pub/bzip2/bzip2-$pkgver.tar.gz)
+sha256sums=('ab5a03176ee106d3f0fa90e381da478ddae405918153cca248e682cd0c4a2269')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd bzip2-$pkgver
+
+    ${MAKE} libbz2.a CC=${CC} AR=${AR} RANLIB=${RANLIB}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd bzip2-$pkgver
+
+    install -Dm 644 bzlib.h -t "${pkgdir}/${SYSROOT}/${PREFIX}/include"
+    install -Dm 644 libbz2.a -t "${pkgdir}/${SYSROOT}/${PREFIX}/lib"
+}

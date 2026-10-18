@@ -1,0 +1,36 @@
+pkgname=ps4-homebrew-libjpeg-turbo
+pkgver=3.0.2
+pkgrel=1
+pkgdesc='libjpeg derivative with accelerated baseline JPEG compression and decompression'
+arch=('any')
+url='https://github.com/libjpeg-turbo'
+license=('IJG')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${pkgver}/libjpeg-turbo-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-openlibm')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libjpeg-turbo-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DENABLE_STATIC=YES \
+	     -DENABLE_SHARED=NO \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libjpeg-turbo-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

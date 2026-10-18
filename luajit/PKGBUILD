@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-luajit
+pkgver=2.1.1748459687
+pkgrel=1
+pkgdesc='Just-in-time compiler and drop-in replacement for Lua 5.1'
+arch=('any')
+url='https://luajit.org/'
+license=('MIT')
+options=(!strip !libtool staticlibs)
+source=("git+https://github.com/LuaJIT/LuaJIT.git#commit=f9140a622a0c44a99efb391cc1c2358bc8098ab7")
+sha256sums=('SKIP')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-openlibm' 'ps4-homebrew-libcxx')
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd LuaJIT
+    # LuaJIT actually supports the ps4, but will disable ffi
+    # and the JIT compiler. Build it as a regular FreeBSD target instead.
+    sed -i 's|__ORBIS__|__JUNK__|g' src/lj_arch.h
+}
+
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd LuaJIT
+
+    ${MAKE} amalg BUILDMODE=static \
+	    CROSS="${PS4_HOMEBREW_SDK}/bin/orbis-" \
+	    DEFAULT_CC="clang" TARGET_LIBS="-lunwind" Q=
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd LuaJIT
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install PREFIX="${PREFIX}"
+}

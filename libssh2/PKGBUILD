@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-libssh2
+pkgver=1.11.1
+pkgrel=1
+pkgdesc="A library implementing the SSH2 protocol as defined by Internet Drafts"
+url="https://www.libssh2.org/"
+arch=('any')
+license=('BSD')
+options=(!strip !libtool staticlibs)
+source=("https://www.libssh2.org/download/libssh2-$pkgver.tar.gz")
+sha256sums=('d9ec76cbe34db98eec3539fe2c899d26b0c837cb3eb466a56b0f109cabf658f7')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-openssl' 'ps4-homebrew-zlib')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libssh2-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-docker-tests
+    ${MAKE} V=1
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libssh2-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

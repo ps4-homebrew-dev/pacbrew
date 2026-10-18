@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-libvpx
+pkgver=1.14.1
+pkgrel=1
+pkgdesc='VP8 and VP9 codec'
+arch=('any')
+url=https://www.webmproject.org/
+license=(custom:BSD)
+options=(!strip !libtool staticlibs)
+source=("https://chromium.googlesource.com/webm/libvpx/+archive/v1.14.1.tar.gz")
+sha256sums=('SKIP')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-openlibm')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+
+    ./configure --prefix="${PREFIX}" --target=generic-gnu \
+		--enable-static --disable-shared \
+		--disable-install-docs --disable-install-srcs \
+		--disable-unit-tests \
+		--enable-postproc \
+		--enable-vp8 --enable-vp9 \
+		--enable-vp9-highbitdepth \
+		--enable-vp9-temporal-denoising \
+		--as=yasm
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

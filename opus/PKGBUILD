@@ -1,0 +1,36 @@
+pkgname=ps4-homebrew-opus
+pkgver=1.5.2
+pkgrel=1
+pkgdesc='Totally open, royalty-free, highly versatile audio codec'
+arch=('any')
+url='https://www.opus-codec.org'
+license=('BSD-3-Clause')
+source=("https://downloads.xiph.org/releases/opus/opus-$pkgver.tar.gz")
+sha256sums=('65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd opus-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--enable-custom-modes
+    ${MAKE} V=1
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd opus-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

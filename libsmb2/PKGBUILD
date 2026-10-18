@@ -1,0 +1,39 @@
+pkgname=ps4-homebrew-libsmb2
+pkgver=6.2
+pkgrel=1
+pkgdesc="SMB2/3 userspace client"
+url="https://github.com/sahlberg/libsmb2"
+arch=('any')
+license=('GPL')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/sahlberg/libsmb2/archive/refs/tags/libsmb2-$pkgver.tar.gz")
+sha256sums=('8e1f9efc6b2e0f6546f0fe121ac0ddf4fc2f0908ae5a6bd1f185be7c9e0bcbb3')
+makedepends=('ps4-homebrew-sdk')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd libsmb2-libsmb2-$pkgver
+    sed -i 's|add_definitions(-DPS4_PLATFORM)| |g' CMakeLists.txt
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libsmb2-libsmb2-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libsmb2-libsmb2-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

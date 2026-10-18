@@ -1,0 +1,43 @@
+pkgname=ps4-homebrew-libass
+pkgver=0.17.3
+pkgrel=1
+pkgdesc='A portable subtitle renderer'
+arch=('any')
+url="https://github.com/libass/libass"
+license=('custom: ISC')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/libass/libass/releases/download/$pkgver/libass-$pkgver.tar.xz")
+sha256sums=('SKIP')
+depends=('ps4-homebrew-libfribidi' 'ps4-homebrew-freetype' 'ps4-homebrew-harfbuzz'
+	'ps4-homebrew-fontconfig')
+makedepends=('ps4-homebrew-sdk')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libass-$pkgver
+
+    autoreconf -fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libass-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-asm --enable-large-tiles
+    ${MAKE} V=1
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libass-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

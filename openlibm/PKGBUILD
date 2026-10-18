@@ -1,0 +1,36 @@
+pkgname=ps4-homebrew-openlibm
+pkgver=0.8.6
+pkgrel=1
+pkgdesc='Standalone implementation of C mathematical functions'
+arch=('any')
+url='https://openlibm.org/'
+license=('MIT')
+options=(!strip staticlibs)
+source=("https://github.com/JuliaMath/openlibm/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('347998968cfeb2f9b91de6a8e85d2ba92dec0915d53500a4bc483e056f85b94c')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd openlibm-$pkgver
+
+    ${CMAKE} -DCMAKE_INSTALL_LIBDIR="${PREFIX}/lib" \
+	     -B build -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd openlibm-$pkgver
+
+    ${MAKE} -C build install DESTDIR="${pkgdir}/${SYSROOT}"
+    ln -s libopenlibm.a "${pkgdir}/${SYSROOT}/${PREFIX}/lib/libm.a"
+}

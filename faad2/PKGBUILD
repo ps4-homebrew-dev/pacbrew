@@ -1,0 +1,37 @@
+pkgname=ps4-homebrew-faad2
+pkgver=2.11.1
+pkgrel=1
+pkgdesc="Freeware Advanced Audio (AAC) Decoder"
+arch=('any')
+url="https://github.com/knik0/faad2"
+license=('GPL-2.0-or-later')
+source=("$url/archive/$pkgver.tar.gz")
+sha256sums=('72dbc0494de9ee38d240f670eccf2b10ef715fd0508c305532ca3def3225bb06')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd faad2-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd faad2-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

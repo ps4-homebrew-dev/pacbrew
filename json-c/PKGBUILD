@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-json-c
+pkgver=0.19
+_date=20260627
+pkgrel=1
+pkgdesc="A JSON implementation in C"
+url="https://github.com/json-c/json-c/wiki"
+license=('MIT')
+arch=('any')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/json-c/json-c/releases/download/json-c-${pkgver}-${_date}/json-c-${pkgver}.tar.gz")
+sha256sums=('37ad0249902e301bd9052bf712e511fcc6acff4ecaad4b5900aad9ce564e26de')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-openlibm')
+depends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd json-c-${pkgver}
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+        -DCMAKE_C_FLAGS="-Wno-unreachable-code-generic-assoc -std=c11" \
+        -B build \
+        -S .
+    ${MAKE} -C build
+}
+
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd json-c-${pkgver}
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

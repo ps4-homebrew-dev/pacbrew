@@ -1,0 +1,38 @@
+pkgname=ps4-homebrew-libssh
+pkgver=0.12.0
+pkgrel=1
+pkgdesc='Library for accessing ssh client services through C libraries'
+url='https://www.libssh.org/'
+license=('LGPL-2.1-or-later')
+arch=('any')
+options=(!strip !libtool staticlibs)
+source=("https://www.libssh.org/files/${pkgver%.*}/libssh-${pkgver}.tar.xz")
+sha256sums=('1a6af424d8327e5eedef4e5fe7f5b924226dd617ac9f3de80f217d82a36a7121')
+groups=('ps4-homebrew-dev')
+depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libssh-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DWITH_EXAMPLES=NO \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libssh-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

@@ -1,0 +1,38 @@
+pkgname=ps4-homebrew-freetype
+pkgver=2.13.2
+pkgrel=1
+pkgdesc='FreeType is a freely available software library to render fonts.'
+arch=('any')
+url='https://www.freetype.org/'
+license=(GPL2+ custom:FreeType)
+source=("http://download.savannah.gnu.org/releases/freetype/freetype-$pkgver.tar.gz")
+sha256sums=('1ac27e16c134a7f2ccea177faba19801131116fd682efc1f5737037c5db224b5')
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd freetype-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--with-zlib=no \
+		--with-bzip2=no \
+		--with-png=no \
+		--with-harfbuzz=no \
+		--enable-freetype-config
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd freetype-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

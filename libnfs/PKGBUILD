@@ -1,0 +1,42 @@
+pkgname=ps4-homebrew-libnfs
+pkgver=5.0.3
+pkgrel=1
+pkgdesc="client library for accessing NFS shares"
+url="https://github.com/sahlberg/libnfs"
+arch=('any')
+license=('GPL')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/sahlberg/libnfs/archive/libnfs-$pkgver.tar.gz")
+sha256sums=('d945cb4f4c8f82ee1f3640893a168810f794a28e1010bb007ec5add345e9df3e')
+makedepends=('ps4-homebrew-sdk')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libnfs-libnfs-$pkgver
+
+    autoreconf -vif
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libnfs-libnfs-$pkgver
+
+    export CFLAGS="-Wno-cast-align"
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--without-libkrb5
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libnfs-libnfs-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    make install
+}

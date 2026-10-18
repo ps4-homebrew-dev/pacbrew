@@ -1,0 +1,35 @@
+pkgname=ps4-homebrew-libsamplerate
+pkgver=0.2.2
+pkgrel=1
+pkgdesc="An audio sample rate conversion library"
+arch=('any')
+url="https://libsndfile.github.io/libsamplerate/"
+license=('BSD')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/libsndfile/libsamplerate/releases/download/${pkgver}/libsamplerate-${pkgver}.tar.xz")
+sha256sums=('3258da280511d24b49d6b08615bbe824d0cacc9842b0e4caf11c52cf2b043893')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libsamplerate-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libsamplerate-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

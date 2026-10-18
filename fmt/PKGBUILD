@@ -1,0 +1,39 @@
+pkgname=ps4-homebrew-fmt
+pkgver=12.1.0
+pkgrel=1
+pkgdesc='Open-source formatting library for C++'
+arch=('any')
+url='https://fmt.dev'
+license=('MIT')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/fmtlib/fmt/archive/refs/tags/$pkgver.tar.gz")
+sha256sums=('SKIP')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd fmt-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DFMT_DOC=NO \
+	     -DFMT_TEST=NO \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd fmt-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}
