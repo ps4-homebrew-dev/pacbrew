@@ -1,0 +1,39 @@
+pkgname=ps4-homebrew-sdl2_ttf
+pkgver=2.22.0
+pkgrel=1
+pkgdesc="SDL2 TrueType font library."
+arch=('any')
+url="https://libsdl.org/projects/SDL_ttf"
+license=("zlib")
+options=(!strip !libtool staticlibs)
+source=("https://github.com/libsdl-org/SDL_ttf/releases/download/release-${pkgver}/SDL2_ttf-${pkgver}.tar.gz")
+sha256sums=('d48cbd1ce475b9e178206bf3b72d56b66d84d44f64ac05803328396234d67723')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-openlibm' 'ps4-homebrew-sdl2'
+	     'ps4-homebrew-freetype')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_ttf-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared \
+		--disable-freetype-builtin \
+		--disable-harfbuzz-builtin \
+		--disable-harfbuzz
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_ttf-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

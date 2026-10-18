@@ -1,0 +1,837 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sun, 18 Oct 2026 15:01:22 +0000
+Subject: [PATCH] ps4: a joystick driver for the DualShock 4
+
+The controller of each user logged in (libScePad), one joystick per login
+slot, which is its player index, named after the user. It is a DualShock 4
+to SDL (Sony's vendor and product ids), with buttons and axes laid out as
+the HIDAPI driver lays them out on a PC, and a game controller mapping from
+the driver. Sticks and triggers are linear, from 0..255 to -32768..32767.
+
+The PS and SHARE buttons belong to the system: there is no guide and no
+back button, and the touch pad click is the touchpad button. The touch pad
+(two fingers), the gyroscope and the accelerometer, rumble and the light
+bar are supported; the light bar goes back to the user's color, and rumble
+stops, when the joystick is closed. A controller that goes away has its
+joystick recentered until it is back.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
+---
+ CMakeLists.txt                     |   6 +
+ include/SDL_config.h.cmake         |   1 +
+ src/joystick/SDL_joystick.c        |   3 +
+ src/joystick/SDL_sysjoystick.h     |   1 +
+ src/joystick/ps4/SDL_ps4joystick.c | 588 +++++++++++++++++++++++++++++
+ src/joystick/ps4/SDL_ps4joystick.h | 148 ++++++++
+ 6 files changed, 747 insertions(+)
+ create mode 100644 src/joystick/ps4/SDL_ps4joystick.c
+ create mode 100644 src/joystick/ps4/SDL_ps4joystick.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 47c4b663c..2da6b370e 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -1500,6 +1500,12 @@ elseif(PS4)
+     list(APPEND SOURCE_FILES ${PS4_FILESYSTEM_SOURCES})
+     set(HAVE_SDL_FILESYSTEM TRUE)
+   endif()
++  if(SDL_JOYSTICK)
++    set(SDL_JOYSTICK_PS4 1)
++    file(GLOB PS4_JOYSTICK_SOURCES ${SDL2_SOURCE_DIR}/src/joystick/ps4/*.c)
++    list(APPEND SOURCE_FILES ${PS4_JOYSTICK_SOURCES})
++    set(HAVE_SDL_JOYSTICK TRUE)
++  endif()
+   if(SDL_LOCALE)
+     file(GLOB PS4_LOCALE_SOURCES ${SDL2_SOURCE_DIR}/src/locale/ps4/*.c)
+     list(APPEND SOURCE_FILES ${PS4_LOCALE_SOURCES})
+diff --git a/include/SDL_config.h.cmake b/include/SDL_config.h.cmake
+index 9a63979c0..5a10f7317 100644
+--- a/include/SDL_config.h.cmake
++++ b/include/SDL_config.h.cmake
+@@ -356,6 +356,7 @@
+ #cmakedefine SDL_JOYSTICK_VITA @SDL_JOYSTICK_VITA@
+ #cmakedefine SDL_JOYSTICK_PSP @SDL_JOYSTICK_PSP@
+ #cmakedefine SDL_JOYSTICK_PS2 @SDL_JOYSTICK_PS2@
++#cmakedefine SDL_JOYSTICK_PS4 @SDL_JOYSTICK_PS4@
+ #cmakedefine SDL_JOYSTICK_N3DS @SDL_JOYSTICK_N3DS@
+ #cmakedefine SDL_HAPTIC_DUMMY @SDL_HAPTIC_DUMMY@
+ #cmakedefine SDL_HAPTIC_LINUX @SDL_HAPTIC_LINUX@
+diff --git a/src/joystick/SDL_joystick.c b/src/joystick/SDL_joystick.c
+index e96828859..61c984d5c 100644
+--- a/src/joystick/SDL_joystick.c
++++ b/src/joystick/SDL_joystick.c
+@@ -94,6 +94,9 @@ static SDL_JoystickDriver *SDL_joystick_drivers[] = {
+ #ifdef SDL_JOYSTICK_PS2
+     &SDL_PS2_JoystickDriver,
+ #endif
++#ifdef SDL_JOYSTICK_PS4
++    &SDL_PS4_JoystickDriver,
++#endif
+ #ifdef SDL_JOYSTICK_PSP
+     &SDL_PSP_JoystickDriver,
+ #endif
+diff --git a/src/joystick/SDL_sysjoystick.h b/src/joystick/SDL_sysjoystick.h
+index cabb69af5..9090317a9 100644
+--- a/src/joystick/SDL_sysjoystick.h
++++ b/src/joystick/SDL_sysjoystick.h
+@@ -250,6 +250,7 @@ extern SDL_JoystickDriver SDL_WINDOWS_JoystickDriver;
+ extern SDL_JoystickDriver SDL_WINMM_JoystickDriver;
+ extern SDL_JoystickDriver SDL_OS2_JoystickDriver;
+ extern SDL_JoystickDriver SDL_PS2_JoystickDriver;
++extern SDL_JoystickDriver SDL_PS4_JoystickDriver;
+ extern SDL_JoystickDriver SDL_PSP_JoystickDriver;
+ extern SDL_JoystickDriver SDL_VITA_JoystickDriver;
+ extern SDL_JoystickDriver SDL_N3DS_JoystickDriver;
+diff --git a/src/joystick/ps4/SDL_ps4joystick.c b/src/joystick/ps4/SDL_ps4joystick.c
+new file mode 100644
+index 000000000..c499146ca
+--- /dev/null
++++ b/src/joystick/ps4/SDL_ps4joystick.c
+@@ -0,0 +1,588 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifdef SDL_JOYSTICK_PS4
++
++/* The DualShock 4 of each user logged in to the PS4 (libScePad), one
++   joystick per user, in the user's login slot (the player index).
++
++   Buttons, axes and hat are laid out as SDL's HIDAPI driver lays out a
++   DualShock 4 on a PC, and the game controller mapping comes from the
++   driver. The PS and SHARE buttons belong to the system, so there is no
++   guide and no back button; the touch pad click is the touchpad button.
++   The touch pad, the accelerometer and the gyroscope are reported too. */
++
++#include "SDL_events.h"
++#include "../SDL_sysjoystick.h"
++#include "../SDL_joystick_c.h"
++#include "../usb_ids.h"
++#include "../../core/ps4/SDL_ps4.h"
++
++#include "SDL_ps4joystick.h"
++
++SDL_COMPILE_TIME_ASSERT(PS4_PadData, sizeof(PS4_PadData) == 120);
++SDL_COMPILE_TIME_ASSERT(PS4_PadControllerInformation, sizeof(PS4_PadControllerInformation) == 28);
++
++#define PS4_JOYSTICK_NAME "PS4 Controller"
++
++enum
++{
++    PS4_AXIS_LEFTX,
++    PS4_AXIS_LEFTY,
++    PS4_AXIS_RIGHTX,
++    PS4_AXIS_RIGHTY,
++    PS4_AXIS_LEFT_TRIGGER,
++    PS4_AXIS_RIGHT_TRIGGER,
++    PS4_AXIS_MAX
++};
++
++/* Joystick button index -> libScePad button, 0 for a button the system
++   keeps to itself: SDL's game controller button order, then the touch pad
++   click, as the HIDAPI driver has them. */
++static const Uint32 ps4_button_map[] = {
++    PS4_PAD_BUTTON_CROSS,     /* a */
++    PS4_PAD_BUTTON_CIRCLE,    /* b */
++    PS4_PAD_BUTTON_SQUARE,    /* x */
++    PS4_PAD_BUTTON_TRIANGLE,  /* y */
++    0,                        /* back: SHARE belongs to the system */
++    0,                        /* guide: PS belongs to the system */
++    PS4_PAD_BUTTON_OPTIONS,   /* start */
++    PS4_PAD_BUTTON_L3,        /* leftstick */
++    PS4_PAD_BUTTON_R3,        /* rightstick */
++    PS4_PAD_BUTTON_L1,        /* leftshoulder */
++    PS4_PAD_BUTTON_R1,        /* rightshoulder */
++    PS4_PAD_BUTTON_UP,        /* dpup */
++    PS4_PAD_BUTTON_DOWN,      /* dpdown */
++    PS4_PAD_BUTTON_LEFT,      /* dpleft */
++    PS4_PAD_BUTTON_RIGHT,     /* dpright */
++    PS4_PAD_BUTTON_TOUCH_PAD, /* touchpad */
++};
++
++#define PS4_BUTTON_TOUCHPAD 15
++
++typedef struct PS4_PadContext
++{
++    int user_id;                /* PS4_USER_ID_INVALID when nobody is there */
++    SDL_JoystickID instance_id;
++    char name[64];
++    int handle;                 /* -1 when the joystick is not open */
++    SDL_bool sensors_enabled;
++    float touch_width;
++    float touch_height;
++    PS4_PadData pad;
++} PS4_PadContext;
++
++static PS4_PadContext ps4_pads[PS4_MAX_LOGIN_USERS];
++static SDL_JoystickGUID ps4_guid;
++
++/* 0 .. 255 -> -32768 .. 32767, as the HIDAPI driver does */
++static Sint16 PS4_AxisValue(Uint8 value)
++{
++    return (Sint16)(((int)value * 257) - 32768);
++}
++
++static PS4_PadContext *PS4_GetPadForDeviceIndex(int device_index)
++{
++    int i;
++
++    for (i = 0; i < PS4_MAX_LOGIN_USERS; i++) {
++        if (ps4_pads[i].user_id == PS4_USER_ID_INVALID) {
++            continue;
++        }
++        if (device_index == 0) {
++            return &ps4_pads[i];
++        }
++        device_index--;
++    }
++    return NULL;
++}
++
++/* NULL once the joystick's user has logged out: the slot may be someone
++   else's by then. */
++static PS4_PadContext *PS4_GetPadForJoystick(SDL_Joystick *joystick)
++{
++    PS4_PadContext *ctx = (PS4_PadContext *)joystick->hwdata;
++
++    if (!ctx || ctx->instance_id != joystick->instance_id) {
++        return NULL;
++    }
++    return ctx;
++}
++
++static void PS4_ClosePad(PS4_PadContext *ctx)
++{
++    if (ctx->handle >= 0) {
++        const PS4_PadVibration stop = { 0, 0 };
++
++        scePadSetVibration(ctx->handle, &stop);
++        scePadResetLightBar(ctx->handle);
++        if (ctx->sensors_enabled) {
++            scePadSetMotionSensorState(ctx->handle, SDL_FALSE);
++        }
++        scePadClose(ctx->handle);
++        ctx->handle = -1;
++    }
++    ctx->sensors_enabled = SDL_FALSE;
++}
++
++static void PS4_JoystickDetect(void)
++{
++    PS4_LoginUserIdList users;
++    int i;
++
++    if (sceUserServiceGetLoginUserIdList(&users) != 0) {
++        return;
++    }
++
++    for (i = 0; i < PS4_MAX_LOGIN_USERS; i++) {
++        PS4_PadContext *ctx = &ps4_pads[i];
++
++        if (users.user_id[i] == ctx->user_id) {
++            continue;
++        }
++
++        /* Whoever was in this slot logged out. */
++        if (ctx->user_id != PS4_USER_ID_INVALID) {
++            PS4_ClosePad(ctx);
++            ctx->user_id = PS4_USER_ID_INVALID;
++            SDL_PrivateJoystickRemoved(ctx->instance_id);
++            ctx->instance_id = -1;
++        }
++
++        /* Someone logged in to it. */
++        if (users.user_id[i] != PS4_USER_ID_INVALID) {
++            ctx->user_id = users.user_id[i];
++            ctx->instance_id = SDL_GetNextJoystickInstanceID();
++            if (sceUserServiceGetUserName(ctx->user_id, ctx->name, sizeof(ctx->name)) != 0 ||
++                !ctx->name[0]) {
++                SDL_snprintf(ctx->name, sizeof(ctx->name), "%s %d", PS4_JOYSTICK_NAME, i + 1);
++            }
++            SDL_PrivateJoystickAdded(ctx->instance_id);
++        }
++    }
++}
++
++static int PS4_JoystickInit(void)
++{
++    int i;
++
++    for (i = 0; i < PS4_MAX_LOGIN_USERS; i++) {
++        SDL_zero(ps4_pads[i]);
++        ps4_pads[i].user_id = PS4_USER_ID_INVALID;
++        ps4_pads[i].instance_id = -1;
++        ps4_pads[i].handle = -1;
++    }
++
++    /* A DualShock 4 to SDL, so that games see a PS4 controller. */
++    ps4_guid = SDL_CreateJoystickGUID(SDL_HARDWARE_BUS_USB, USB_VENDOR_SONY, USB_PRODUCT_SONY_DS4_SLIM, 0,
++                                      NULL, PS4_JOYSTICK_NAME, 0, 0);
++
++    if (PS4_InitPad() < 0) {
++        return -1;
++    }
++
++    PS4_JoystickDetect();
++
++    return 0;
++}
++
++static int PS4_JoystickGetCount(void)
++{
++    int count = 0;
++    int i;
++
++    for (i = 0; i < PS4_MAX_LOGIN_USERS; i++) {
++        if (ps4_pads[i].user_id != PS4_USER_ID_INVALID) {
++            count++;
++        }
++    }
++    return count;
++}
++
++static const char *PS4_JoystickGetDeviceName(int device_index)
++{
++    PS4_PadContext *ctx = PS4_GetPadForDeviceIndex(device_index);
++
++    return ctx ? ctx->name : NULL;
++}
++
++static const char *PS4_JoystickGetDevicePath(int device_index)
++{
++    return NULL;
++}
++
++static int PS4_JoystickGetDeviceSteamVirtualGamepadSlot(int device_index)
++{
++    return -1;
++}
++
++static int PS4_JoystickGetDevicePlayerIndex(int device_index)
++{
++    PS4_PadContext *ctx = PS4_GetPadForDeviceIndex(device_index);
++
++    return ctx ? (int)(ctx - ps4_pads) : -1;
++}
++
++static void PS4_JoystickSetDevicePlayerIndex(int device_index, int player_index)
++{
++}
++
++static SDL_JoystickGUID PS4_JoystickGetDeviceGUID(int device_index)
++{
++    return ps4_guid;
++}
++
++static SDL_JoystickID PS4_JoystickGetDeviceInstanceID(int device_index)
++{
++    PS4_PadContext *ctx = PS4_GetPadForDeviceIndex(device_index);
++
++    return ctx ? ctx->instance_id : -1;
++}
++
++static int PS4_JoystickOpen(SDL_Joystick *joystick, int device_index)
++{
++    PS4_PadContext *ctx = PS4_GetPadForDeviceIndex(device_index);
++    PS4_PadControllerInformation info;
++    int handle;
++
++    if (!ctx) {
++        return SDL_SetError("No joystick at device index %d", device_index);
++    }
++
++    handle = scePadOpen(ctx->user_id, PS4_PAD_PORT_TYPE_STANDARD, 0, NULL);
++    if ((unsigned)handle == PS4_PAD_ERROR_ALREADY_OPENED) {
++        handle = scePadGetHandle(ctx->user_id, PS4_PAD_PORT_TYPE_STANDARD, 0);
++    }
++    if (handle < 0) {
++        return SDL_SetError("scePadOpen: 0x%08x", (unsigned)handle);
++    }
++
++    ctx->handle = handle;
++    ctx->sensors_enabled = SDL_FALSE;
++    SDL_zero(ctx->pad);
++
++    ctx->touch_width = PS4_PAD_TOUCHPAD_WIDTH;
++    ctx->touch_height = PS4_PAD_TOUCHPAD_HEIGHT;
++    SDL_zero(info);
++    if (scePadGetControllerInformation(handle, &info) == 0 &&
++        info.touchPadResolutionX > 1 && info.touchPadResolutionY > 1) {
++        ctx->touch_width = info.touchPadResolutionX;
++        ctx->touch_height = info.touchPadResolutionY;
++    }
++
++    joystick->hwdata = (struct joystick_hwdata *)ctx;
++    joystick->instance_id = ctx->instance_id;
++    joystick->nbuttons = SDL_arraysize(ps4_button_map);
++    joystick->naxes = PS4_AXIS_MAX;
++    joystick->nhats = 1;
++    joystick->epowerlevel = SDL_JOYSTICK_POWER_UNKNOWN;
++
++    SDL_PrivateJoystickAddTouchpad(joystick, PS4_PAD_MAX_TOUCH_NUM);
++    SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_GYRO, 0.0f);
++    SDL_PrivateJoystickAddSensor(joystick, SDL_SENSOR_ACCEL, 0.0f);
++
++    return 0;
++}
++
++static int PS4_JoystickRumble(SDL_Joystick *joystick, Uint16 low_frequency_rumble, Uint16 high_frequency_rumble)
++{
++    PS4_PadContext *ctx = PS4_GetPadForJoystick(joystick);
++    PS4_PadVibration vibration;
++    int err;
++
++    if (!ctx || ctx->handle < 0) {
++        return SDL_SetError("Joystick not open");
++    }
++
++    /* The large motor is the low frequency one. */
++    vibration.largeMotor = (Uint8)(low_frequency_rumble >> 8);
++    vibration.smallMotor = (Uint8)(high_frequency_rumble >> 8);
++
++    err = scePadSetVibration(ctx->handle, &vibration);
++    if (err != 0) {
++        return SDL_SetError("scePadSetVibration: 0x%08x", (unsigned)err);
++    }
++    return 0;
++}
++
++static int PS4_JoystickRumbleTriggers(SDL_Joystick *joystick, Uint16 left_rumble, Uint16 right_rumble)
++{
++    return SDL_Unsupported();
++}
++
++static Uint32 PS4_JoystickGetCapabilities(SDL_Joystick *joystick)
++{
++    return SDL_JOYCAP_LED | SDL_JOYCAP_RUMBLE;
++}
++
++static int PS4_JoystickSetLED(SDL_Joystick *joystick, Uint8 red, Uint8 green, Uint8 blue)
++{
++    PS4_PadContext *ctx = PS4_GetPadForJoystick(joystick);
++    PS4_PadColor color;
++    int err;
++
++    if (!ctx || ctx->handle < 0) {
++        return SDL_SetError("Joystick not open");
++    }
++
++    color.r = red;
++    color.g = green;
++    color.b = blue;
++    color.reserve = 0;
++
++    err = scePadSetLightBar(ctx->handle, &color);
++    if (err != 0) {
++        return SDL_SetError("scePadSetLightBar: 0x%08x", (unsigned)err);
++    }
++    return 0;
++}
++
++static int PS4_JoystickSendEffect(SDL_Joystick *joystick, const void *data, int size)
++{
++    return SDL_Unsupported();
++}
++
++static int PS4_JoystickSetSensorsEnabled(SDL_Joystick *joystick, SDL_bool enabled)
++{
++    PS4_PadContext *ctx = PS4_GetPadForJoystick(joystick);
++    int err;
++
++    if (!ctx || ctx->handle < 0) {
++        return SDL_SetError("Joystick not open");
++    }
++
++    err = scePadSetMotionSensorState(ctx->handle, enabled);
++    if (err != 0) {
++        return SDL_SetError("scePadSetMotionSensorState: 0x%08x", (unsigned)err);
++    }
++    ctx->sensors_enabled = enabled;
++    return 0;
++}
++
++static void PS4_UpdateTouchpad(SDL_Joystick *joystick, PS4_PadContext *ctx, const PS4_PadData *pad)
++{
++    const PS4_PadTouchData *touch = &pad->touchData;
++    int i;
++
++    /* One finger per slot: a slot's finger is down while the pad reports
++       it, and lifted when it no longer does. */
++    for (i = 0; i < PS4_PAD_MAX_TOUCH_NUM; i++) {
++        if (i < touch->touchNum) {
++            float x = touch->touch[i].x / ctx->touch_width;
++            float y = touch->touch[i].y / ctx->touch_height;
++
++            SDL_PrivateJoystickTouchpad(joystick, 0, i, SDL_PRESSED,
++                                        SDL_clamp(x, 0.0f, 1.0f),
++                                        SDL_clamp(y, 0.0f, 1.0f), 1.0f);
++        } else {
++            SDL_PrivateJoystickTouchpad(joystick, 0, i, SDL_RELEASED, 0.0f, 0.0f, 0.0f);
++        }
++    }
++}
++
++static void PS4_UpdateSensors(SDL_Joystick *joystick, const PS4_PadData *pad)
++{
++    float data[3];
++
++    /* libScePad has the axes SDL has for a game controller held in front
++       of you: X to the right, Y up, Z toward you. */
++    data[0] = pad->angularVelocity.x;
++    data[1] = pad->angularVelocity.y;
++    data[2] = pad->angularVelocity.z;
++    SDL_PrivateJoystickSensor(joystick, SDL_SENSOR_GYRO, pad->timestamp, data, 3);
++
++    data[0] = pad->acceleration.x * SDL_STANDARD_GRAVITY;
++    data[1] = pad->acceleration.y * SDL_STANDARD_GRAVITY;
++    data[2] = pad->acceleration.z * SDL_STANDARD_GRAVITY;
++    SDL_PrivateJoystickSensor(joystick, SDL_SENSOR_ACCEL, pad->timestamp, data, 3);
++}
++
++static void PS4_JoystickUpdate(SDL_Joystick *joystick)
++{
++    PS4_PadContext *ctx = PS4_GetPadForJoystick(joystick);
++    PS4_PadData pad;
++    Uint32 changed;
++    Uint8 hat = SDL_HAT_CENTERED;
++    int i;
++
++    if (!ctx || ctx->handle < 0) {
++        return;
++    }
++
++    SDL_zero(pad);
++    if (scePadReadState(ctx->handle, &pad) != 0) {
++        return;
++    }
++
++    if (!pad.connected) {
++        /* Its controller went away (it turned off, or the user switched
++           to another one): let go of everything until it is back. */
++        if (ctx->pad.connected) {
++            SDL_PrivateJoystickForceRecentering(joystick);
++            for (i = 0; i < PS4_PAD_MAX_TOUCH_NUM; i++) {
++                SDL_PrivateJoystickTouchpad(joystick, 0, i, SDL_RELEASED, 0.0f, 0.0f, 0.0f);
++            }
++            SDL_zero(ctx->pad);
++        }
++        return;
++    }
++
++    if (pad.leftStick.x != ctx->pad.leftStick.x || !ctx->pad.connected) {
++        SDL_PrivateJoystickAxis(joystick, PS4_AXIS_LEFTX, PS4_AxisValue(pad.leftStick.x));
++    }
++    if (pad.leftStick.y != ctx->pad.leftStick.y || !ctx->pad.connected) {
++        SDL_PrivateJoystickAxis(joystick, PS4_AXIS_LEFTY, PS4_AxisValue(pad.leftStick.y));
++    }
++    if (pad.rightStick.x != ctx->pad.rightStick.x || !ctx->pad.connected) {
++        SDL_PrivateJoystickAxis(joystick, PS4_AXIS_RIGHTX, PS4_AxisValue(pad.rightStick.x));
++    }
++    if (pad.rightStick.y != ctx->pad.rightStick.y || !ctx->pad.connected) {
++        SDL_PrivateJoystickAxis(joystick, PS4_AXIS_RIGHTY, PS4_AxisValue(pad.rightStick.y));
++    }
++    if (pad.analogButtons.l2 != ctx->pad.analogButtons.l2 || !ctx->pad.connected) {
++        SDL_PrivateJoystickAxis(joystick, PS4_AXIS_LEFT_TRIGGER, PS4_AxisValue(pad.analogButtons.l2));
++    }
++    if (pad.analogButtons.r2 != ctx->pad.analogButtons.r2 || !ctx->pad.connected) {
++        SDL_PrivateJoystickAxis(joystick, PS4_AXIS_RIGHT_TRIGGER, PS4_AxisValue(pad.analogButtons.r2));
++    }
++
++    changed = pad.buttons ^ ctx->pad.buttons;
++    if (changed) {
++        for (i = 0; i < (int)SDL_arraysize(ps4_button_map); i++) {
++            if (ps4_button_map[i] && (changed & ps4_button_map[i])) {
++                SDL_PrivateJoystickButton(joystick, (Uint8)i,
++                                          (pad.buttons & ps4_button_map[i]) ? SDL_PRESSED : SDL_RELEASED);
++            }
++        }
++
++        if (pad.buttons & PS4_PAD_BUTTON_UP) {
++            hat |= SDL_HAT_UP;
++        }
++        if (pad.buttons & PS4_PAD_BUTTON_DOWN) {
++            hat |= SDL_HAT_DOWN;
++        }
++        if (pad.buttons & PS4_PAD_BUTTON_LEFT) {
++            hat |= SDL_HAT_LEFT;
++        }
++        if (pad.buttons & PS4_PAD_BUTTON_RIGHT) {
++            hat |= SDL_HAT_RIGHT;
++        }
++        SDL_PrivateJoystickHat(joystick, 0, hat);
++    }
++
++    PS4_UpdateTouchpad(joystick, ctx, &pad);
++
++    if (ctx->sensors_enabled) {
++        PS4_UpdateSensors(joystick, &pad);
++    }
++
++    SDL_memcpy(&ctx->pad, &pad, sizeof(pad));
++}
++
++static void PS4_JoystickClose(SDL_Joystick *joystick)
++{
++    PS4_PadContext *ctx = PS4_GetPadForJoystick(joystick);
++
++    if (ctx) {
++        PS4_ClosePad(ctx);
++    }
++    joystick->hwdata = NULL;
++}
++
++static void PS4_JoystickQuit(void)
++{
++    int i;
++
++    for (i = 0; i < PS4_MAX_LOGIN_USERS; i++) {
++        PS4_ClosePad(&ps4_pads[i]);
++        ps4_pads[i].user_id = PS4_USER_ID_INVALID;
++        ps4_pads[i].instance_id = -1;
++    }
++}
++
++static SDL_bool PS4_JoystickGetGamepadMapping(int device_index, SDL_GamepadMapping *out)
++{
++    if (!PS4_GetPadForDeviceIndex(device_index)) {
++        return SDL_FALSE;
++    }
++
++#define PS4_MAP_BUTTON(binding, index) \
++    out->binding.kind = EMappingKind_Button; \
++    out->binding.target = index
++#define PS4_MAP_AXIS(binding, index) \
++    out->binding.kind = EMappingKind_Axis; \
++    out->binding.target = index
++
++    PS4_MAP_BUTTON(a, SDL_CONTROLLER_BUTTON_A);
++    PS4_MAP_BUTTON(b, SDL_CONTROLLER_BUTTON_B);
++    PS4_MAP_BUTTON(x, SDL_CONTROLLER_BUTTON_X);
++    PS4_MAP_BUTTON(y, SDL_CONTROLLER_BUTTON_Y);
++    PS4_MAP_BUTTON(start, SDL_CONTROLLER_BUTTON_START);
++    PS4_MAP_BUTTON(leftstick, SDL_CONTROLLER_BUTTON_LEFTSTICK);
++    PS4_MAP_BUTTON(rightstick, SDL_CONTROLLER_BUTTON_RIGHTSTICK);
++    PS4_MAP_BUTTON(leftshoulder, SDL_CONTROLLER_BUTTON_LEFTSHOULDER);
++    PS4_MAP_BUTTON(rightshoulder, SDL_CONTROLLER_BUTTON_RIGHTSHOULDER);
++    PS4_MAP_BUTTON(dpup, SDL_CONTROLLER_BUTTON_DPAD_UP);
++    PS4_MAP_BUTTON(dpdown, SDL_CONTROLLER_BUTTON_DPAD_DOWN);
++    PS4_MAP_BUTTON(dpleft, SDL_CONTROLLER_BUTTON_DPAD_LEFT);
++    PS4_MAP_BUTTON(dpright, SDL_CONTROLLER_BUTTON_DPAD_RIGHT);
++    PS4_MAP_BUTTON(touchpad, PS4_BUTTON_TOUCHPAD);
++    PS4_MAP_AXIS(leftx, PS4_AXIS_LEFTX);
++    PS4_MAP_AXIS(lefty, PS4_AXIS_LEFTY);
++    PS4_MAP_AXIS(rightx, PS4_AXIS_RIGHTX);
++    PS4_MAP_AXIS(righty, PS4_AXIS_RIGHTY);
++    PS4_MAP_AXIS(lefttrigger, PS4_AXIS_LEFT_TRIGGER);
++    PS4_MAP_AXIS(righttrigger, PS4_AXIS_RIGHT_TRIGGER);
++
++#undef PS4_MAP_BUTTON
++#undef PS4_MAP_AXIS
++
++    return SDL_TRUE;
++}
++
++SDL_JoystickDriver SDL_PS4_JoystickDriver = {
++    PS4_JoystickInit,
++    PS4_JoystickGetCount,
++    PS4_JoystickDetect,
++    PS4_JoystickGetDeviceName,
++    PS4_JoystickGetDevicePath,
++    PS4_JoystickGetDeviceSteamVirtualGamepadSlot,
++    PS4_JoystickGetDevicePlayerIndex,
++    PS4_JoystickSetDevicePlayerIndex,
++    PS4_JoystickGetDeviceGUID,
++    PS4_JoystickGetDeviceInstanceID,
++    PS4_JoystickOpen,
++    PS4_JoystickRumble,
++    PS4_JoystickRumbleTriggers,
++    PS4_JoystickGetCapabilities,
++    PS4_JoystickSetLED,
++    PS4_JoystickSendEffect,
++    PS4_JoystickSetSensorsEnabled,
++    PS4_JoystickUpdate,
++    PS4_JoystickClose,
++    PS4_JoystickQuit,
++    PS4_JoystickGetGamepadMapping
++};
++
++#endif /* SDL_JOYSTICK_PS4 */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/joystick/ps4/SDL_ps4joystick.h b/src/joystick/ps4/SDL_ps4joystick.h
+new file mode 100644
+index 000000000..9a03a44e6
+--- /dev/null
++++ b/src/joystick/ps4/SDL_ps4joystick.h
+@@ -0,0 +1,148 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifndef SDL_ps4joystick_h_
++#define SDL_ps4joystick_h_
++
++/* libScePad: the DualShock 4, and the remote control port. */
++
++#define PS4_PAD_PORT_TYPE_STANDARD       0
++#define PS4_PAD_PORT_TYPE_REMOTE_CONTROL 16
++
++#define PS4_PAD_ERROR_ALREADY_OPENED 0x80920004u
++
++#define PS4_PAD_BUTTON_L3        0x00000002
++#define PS4_PAD_BUTTON_R3        0x00000004
++#define PS4_PAD_BUTTON_OPTIONS   0x00000008
++#define PS4_PAD_BUTTON_UP        0x00000010
++#define PS4_PAD_BUTTON_RIGHT     0x00000020
++#define PS4_PAD_BUTTON_DOWN      0x00000040
++#define PS4_PAD_BUTTON_LEFT      0x00000080
++#define PS4_PAD_BUTTON_L2        0x00000100
++#define PS4_PAD_BUTTON_R2        0x00000200
++#define PS4_PAD_BUTTON_L1        0x00000400
++#define PS4_PAD_BUTTON_R1        0x00000800
++#define PS4_PAD_BUTTON_TRIANGLE  0x00001000
++#define PS4_PAD_BUTTON_CIRCLE    0x00002000
++#define PS4_PAD_BUTTON_CROSS     0x00004000
++#define PS4_PAD_BUTTON_SQUARE    0x00008000
++#define PS4_PAD_BUTTON_TOUCH_PAD 0x00100000
++
++#define PS4_PAD_MAX_TOUCH_NUM 2
++
++/* The DualShock 4's touch pad, when the controller does not say. */
++#define PS4_PAD_TOUCHPAD_WIDTH  1920
++#define PS4_PAD_TOUCHPAD_HEIGHT 943
++
++typedef struct PS4_PadTouch
++{
++    Uint16 x;
++    Uint16 y;
++    Uint8 id;
++    Uint8 reserve[3];
++} PS4_PadTouch;
++
++typedef struct PS4_PadTouchData
++{
++    Uint8 touchNum;
++    Uint8 reserve[3];
++    Uint32 reserve1;
++    PS4_PadTouch touch[PS4_PAD_MAX_TOUCH_NUM];
++} PS4_PadTouchData;
++
++typedef struct PS4_PadData
++{
++    Uint32 buttons;
++    struct
++    {
++        Uint8 x;
++        Uint8 y;
++    } leftStick, rightStick;
++    struct
++    {
++        Uint8 l2;
++        Uint8 r2;
++        Uint8 padding[2];
++    } analogButtons;
++    struct
++    {
++        float x, y, z, w;
++    } orientation;
++    struct
++    {
++        float x, y, z;
++    } acceleration;      /* in G */
++    struct
++    {
++        float x, y, z;
++    } angularVelocity;   /* in radians per second */
++    PS4_PadTouchData touchData;
++    Uint8 connected;
++    Uint64 timestamp;    /* in microseconds */
++    Uint8 extensionUnitData[16];
++    Uint8 connectedCount;
++    Uint8 reserve[2];
++    Uint8 deviceUniqueDataLen;
++    Uint8 deviceUniqueData[12];
++} PS4_PadData;
++
++typedef struct PS4_PadControllerInformation
++{
++    float touchPadPixelDensity;
++    Uint16 touchPadResolutionX;
++    Uint16 touchPadResolutionY;
++    Uint8 stickDeadZoneLeft;
++    Uint8 stickDeadZoneRight;
++    Uint8 connectionType;
++    Uint8 connectedCount;
++    Uint8 connected;
++    int deviceClass;
++    Uint8 reserve[8];
++} PS4_PadControllerInformation;
++
++typedef struct PS4_PadColor
++{
++    Uint8 r;
++    Uint8 g;
++    Uint8 b;
++    Uint8 reserve;
++} PS4_PadColor;
++
++typedef struct PS4_PadVibration
++{
++    Uint8 largeMotor;
++    Uint8 smallMotor;
++} PS4_PadVibration;
++
++extern int scePadOpen(int user_id, int type, int index, const void *param);
++extern int scePadGetHandle(int user_id, int type, int index);
++extern int scePadClose(int handle);
++extern int scePadReadState(int handle, PS4_PadData *data);
++extern int scePadGetControllerInformation(int handle, PS4_PadControllerInformation *info);
++extern int scePadSetLightBar(int handle, const PS4_PadColor *color);
++extern int scePadResetLightBar(int handle);
++extern int scePadSetVibration(int handle, const PS4_PadVibration *vibration);
++extern int scePadSetMotionSensorState(int handle, SDL_bool enable);
++
++#endif /* SDL_ps4joystick_h_ */
++
++/* vi: set ts=4 sw=4 expandtab: */
+-- 
+2.43.0
+

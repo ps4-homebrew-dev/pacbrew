@@ -1,0 +1,35 @@
+pkgname=ps4-homebrew-sdl2_mixer
+pkgver=2.8.0
+pkgrel=1
+pkgdesc="A sample multi-channel audio mixer library."
+arch=('any')
+url="https://github.com/libsdl-org/SDL_mixer"
+license=("zlib")
+options=(!strip !libtool staticlibs)
+source=("${url}/releases/download/release-${pkgver}/SDL2_mixer-${pkgver}.tar.gz")
+sha256sums=('SKIP')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-sdl2')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_mixer-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_mixer-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

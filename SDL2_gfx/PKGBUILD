@@ -1,0 +1,43 @@
+pkgname=ps4-homebrew-sdl2_gfx
+pkgver=1.0.4
+pkgrel=1
+pkgdesc="SDL graphics drawing primitives and other support functions (Version 2)"
+url="http://www.ferzkopp.net/wordpress/2016/01/02/sdl_gfx-sdl2_gfx/"
+arch=('any')
+license=(zlib)
+source=("https://www.ferzkopp.net/Software/SDL2_gfx/SDL2_gfx-${pkgver}.tar.gz")
+sha256sums=('63e0e01addedc9df2f85b93a248f06e8a04affa014a835c2ea34bfe34e576262')
+options=(!strip !libtool staticlibs)
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-sdl2')
+groups=('ps4-homebrew-dev')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_gfx-$pkgver
+
+    rm config.guess
+    mv acinclude/sdl2.m4 .
+    autoreconf -vi -I.
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_gfx-$pkgver
+
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL2_gfx-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

@@ -1,0 +1,1529 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sun, 18 Oct 2026 15:01:22 +0000
+Subject: [PATCH] ps4: a video driver on Mesa: OpenGL, OpenGL ES and Vulkan
+
+The display is drawn on by the GPU only, through Mesa, which owns VideoOut:
+OpenGL and OpenGL ES 2 through EGL (zink on RADV, EGL's videoout
+platform), and Vulkan (RADV) through VK_KHR_display. There is no software
+framebuffer: windows drawn in software (SDL_GetWindowSurface(), the
+software renderer) are presented by SDL through its OpenGL or OpenGL ES
+renderer.
+
+The display has Mesa's one mode, 1920x1080 at 60 Hz, and a window is
+always the whole screen, whatever size it is created or set to (as with
+KMSDRM): it is resized to the display and the program gets
+SDL_WINDOWEVENT_RESIZED.
+
+- OpenGL and OpenGL ES: libEGL.so.1, with libGLESv2.so.2 for OpenGL ES, are
+  dlopen()ed when a program first asks for a GL window; the display is
+  EGL_DEFAULT_DISPLAY, and any non-zero native window is the screen. Mesa
+  has no libGL on the PS4, so OpenGL functions come from
+  eglGetProcAddress(). The OpenGL and OpenGL ES 2 renderers are built.
+- Vulkan: libvulkan.so.1 (RADV, there is no loader) is dlopen()ed; a
+  window's surface is a display plane surface (VK_KHR_surface and
+  VK_KHR_display).
+- Mesa's libraries stay loaded once loaded: they register atexit()
+  handlers, and keep VideoOut and its framebuffers for the whole process.
+- A USB or Bluetooth keyboard (libSceKeyboard) gives key events, and text
+  input on a US layout. The on-screen keyboard is the IME dialog
+  (libSceImeDialog), whose UTF-16 text is sent as text input, followed by
+  Return. Both libraries are loaded with libSceSysmodule.
+- A media remote on libScePad's remote control port gives the arrow keys,
+  Return, Escape and Menu, from what it reports as the controller's
+  buttons. The PS4 has no HDMI-CEC remote, so there is no CEC key table.
+- The splash screen is hidden when video starts.
+
+docs/README-ps4.md describes the port.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
+---
+ CMakeLists.txt                  |  29 +-
+ docs/README-ps4.md              |  60 ++++
+ include/SDL_config.h.cmake      |   1 +
+ src/video/SDL_egl.c             |   8 +
+ src/video/SDL_sysvideo.h        |   1 +
+ src/video/SDL_video.c           |   3 +
+ src/video/ps4/SDL_ps4keyboard.c | 472 ++++++++++++++++++++++++++++++++
+ src/video/ps4/SDL_ps4keyboard.h |  43 +++
+ src/video/ps4/SDL_ps4opengles.c |  86 ++++++
+ src/video/ps4/SDL_ps4remote.c   | 128 +++++++++
+ src/video/ps4/SDL_ps4remote.h   |  32 +++
+ src/video/ps4/SDL_ps4video.c    | 227 +++++++++++++++
+ src/video/ps4/SDL_ps4video.h    |  58 ++++
+ src/video/ps4/SDL_ps4vulkan.c   | 146 ++++++++++
+ src/video/ps4/SDL_ps4vulkan.h   |  42 +++
+ 15 files changed, 1335 insertions(+), 1 deletion(-)
+ create mode 100644 docs/README-ps4.md
+ create mode 100644 src/video/ps4/SDL_ps4keyboard.c
+ create mode 100644 src/video/ps4/SDL_ps4keyboard.h
+ create mode 100644 src/video/ps4/SDL_ps4opengles.c
+ create mode 100644 src/video/ps4/SDL_ps4remote.c
+ create mode 100644 src/video/ps4/SDL_ps4remote.h
+ create mode 100644 src/video/ps4/SDL_ps4video.c
+ create mode 100644 src/video/ps4/SDL_ps4video.h
+ create mode 100644 src/video/ps4/SDL_ps4vulkan.c
+ create mode 100644 src/video/ps4/SDL_ps4vulkan.h
+
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 2da6b370e..f308f49e0 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -490,7 +490,7 @@ set_option(SDL_WASAPI              "Use the Windows WASAPI audio driver" ${WINDO
+ set_option(SDL_RENDER_D3D          "Enable the Direct3D render driver" ${WINDOWS})
+ set_option(SDL_RENDER_METAL        "Enable the Metal render driver" ${APPLE})
+ set_option(SDL_VIVANTE             "Use Vivante EGL video driver" ${UNIX_SYS})
+-dep_option(SDL_VULKAN              "Enable Vulkan support" ON "ANDROID OR APPLE OR LINUX OR WINDOWS" OFF)
++dep_option(SDL_VULKAN              "Enable Vulkan support" ON "ANDROID OR APPLE OR LINUX OR WINDOWS OR PS4" OFF)
+ set_option(SDL_METAL               "Enable Metal support" ${APPLE})
+ set_option(SDL_KMSDRM              "Use KMS DRM video driver" ${UNIX_SYS})
+ dep_option(SDL_KMSDRM_SHARED       "Dynamically load KMS DRM support" ON "SDL_KMSDRM" OFF)
+@@ -1525,6 +1525,33 @@ elseif(PS4)
+       set(HAVE_CLOCK_GETTIME 1)
+     endif()
+   endif()
++  if(SDL_VIDEO)
++    set(SDL_VIDEO_DRIVER_PS4 1)
++    file(GLOB PS4_VIDEO_SOURCES ${SDL2_SOURCE_DIR}/src/video/ps4/*.c)
++    list(APPEND SOURCE_FILES ${PS4_VIDEO_SOURCES})
++    set(HAVE_SDL_VIDEO TRUE)
++    # Mesa's libEGL.so.1 and libGLESv2.so.2 are loaded at run time, as on
++    # Linux; SDL's own Khronos headers are used when Mesa's are not there.
++    if(SDL_OPENGL OR SDL_OPENGLES)
++      set(SDL_VIDEO_OPENGL_EGL 1)
++      set(HAVE_OPENGL_EGL TRUE)
++    endif()
++    if(SDL_OPENGL)
++      set(SDL_VIDEO_OPENGL 1)
++      set(SDL_VIDEO_RENDER_OGL 1)
++      set(HAVE_OPENGL TRUE)
++    endif()
++    if(SDL_OPENGLES)
++      set(SDL_VIDEO_OPENGL_ES2 1)
++      set(SDL_VIDEO_RENDER_OGL_ES2 1)
++      set(HAVE_OPENGLES TRUE)
++    endif()
++    # Mesa's RADV is libvulkan.so.1, loaded at run time.
++    if(SDL_VULKAN)
++      set(SDL_VIDEO_VULKAN 1)
++      set(HAVE_VULKAN TRUE)
++    endif()
++  endif()
+ 
+   CheckPTHREAD()
+ 
+diff --git a/docs/README-ps4.md b/docs/README-ps4.md
+new file mode 100644
+index 000000000..83e632eb0
+--- /dev/null
++++ b/docs/README-ps4.md
+@@ -0,0 +1,60 @@
++PS4
++===
++SDL port for the Sony PlayStation 4, built with the
++[ps4-homebrew-dev SDK](https://github.com/ps4-homebrew-dev/sdk).
++
++Graphics are drawn by the GPU only, through Mesa: OpenGL and OpenGL ES 2
++through EGL (zink), and Vulkan (RADV) through `VK_KHR_display`. There is no
++software framebuffer of SDL's own: windows drawn in software
++(`SDL_GetWindowSurface()`, the software renderer) are presented by SDL
++through its OpenGL or OpenGL ES renderer.
++
++Building
++--------
++With the SDK installed (`PS4_HOMEBREW_SDK`, by default `/opt/ps4-homebrew-sdk`):
++```
++   source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
++   ${CMAKE} -S. -Bbuild -DCMAKE_BUILD_TYPE=Release
++   ${MAKE} -C build
++   ${MAKE} -C build install DESTDIR="${SYSROOT}"
++```
++SDL is a static library; link it with `orbis-pkg-config --libs sdl2`, which
++adds the system libraries it calls (libScePad, libSceUserService,
++libSceSystemService and libSceSysmodule).
++
++Drivers
++-------
++* Video (`ps4`): one display, 1920x1080 at 60 Hz, Mesa's one VideoOut mode.
++  A window always fills it, whatever size it is created or set to, and the
++  program gets `SDL_WINDOWEVENT_RESIZED`.
++  * OpenGL and OpenGL ES: `libEGL.so.1` and `libGLESv2.so.2` are loaded when
++    a program first asks for a GL window. Mesa has no `libGL` there; OpenGL
++    functions come from `eglGetProcAddress()`.
++  * Vulkan: `libvulkan.so.1` (RADV) is loaded; `SDL_Vulkan_GetInstanceExtensions()`
++    asks for `VK_KHR_surface` and `VK_KHR_display`, and the window's surface
++    is a display plane surface.
++  * Mesa's libraries stay loaded once loaded: they keep VideoOut, and
++    register `atexit()` handlers, for the whole process.
++  * They are found where the SDK's `dlopen()` looks: the system's library
++    folders, `/app0/sce_module/`, then the current folder.
++* Audio (`ps4`): libSceAudioOut's main port, 48 kHz, 16-bit or float, mono,
++  stereo or 7.1.
++* Joystick (`ps4`): the DualShock 4 of each user logged in, one joystick per
++  login slot (its player index), named after the user, with a game
++  controller mapping of its own (a PS4 controller to SDL). The touch pad, the
++  accelerometer, the gyroscope, rumble and the light bar are supported. The
++  PS and SHARE buttons belong to the system, so there is no guide and no back
++  button.
++* Keyboard: a USB or Bluetooth keyboard (libSceKeyboard), as key events, and
++  as text input on a US layout. The on-screen keyboard is the system's IME
++  dialog: `SDL_StartTextInput()` opens it, and the text typed in it is sent
++  as text input, followed by a press of Return.
++* Remote: what a media remote reports on libScePad's remote control port as
++  the controller's arrows, X, O and OPTIONS, as the arrow keys, Return,
++  Escape and Menu.
++* Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
++  or `/app0/` in a package); `SDL_GetPrefPath()` is in `/data/`.
++* Locale: the system language. `SDL_OpenURL()` opens the web browser.
++
++libSceAudioOut, libSceKeyboard and libSceImeDialog have no link stubs in the
++SDK: SDL loads them with libSceSysmodule when it first needs them.
+diff --git a/include/SDL_config.h.cmake b/include/SDL_config.h.cmake
+index 5a10f7317..23306d461 100644
+--- a/include/SDL_config.h.cmake
++++ b/include/SDL_config.h.cmake
+@@ -426,6 +426,7 @@
+ #cmakedefine SDL_VIDEO_DRIVER_RISCOS @SDL_VIDEO_DRIVER_RISCOS@
+ #cmakedefine SDL_VIDEO_DRIVER_PSP @SDL_VIDEO_DRIVER_PSP@
+ #cmakedefine SDL_VIDEO_DRIVER_PS2 @SDL_VIDEO_DRIVER_PS2@
++#cmakedefine SDL_VIDEO_DRIVER_PS4 @SDL_VIDEO_DRIVER_PS4@
+ 
+ #cmakedefine SDL_VIDEO_DRIVER_KMSDRM @SDL_VIDEO_DRIVER_KMSDRM@
+ #cmakedefine SDL_VIDEO_DRIVER_KMSDRM_DYNAMIC @SDL_VIDEO_DRIVER_KMSDRM_DYNAMIC@
+diff --git a/src/video/SDL_egl.c b/src/video/SDL_egl.c
+index 50f7082f4..820f82ff4 100644
+--- a/src/video/SDL_egl.c
++++ b/src/video/SDL_egl.c
+@@ -87,6 +87,14 @@
+ #define DEFAULT_OGL_ES_PVR "libGLES_CM.dylib"   //???
+ #define DEFAULT_OGL_ES     "libGLESv1_CM.dylib" //???
+ 
++#elif defined(SDL_VIDEO_DRIVER_PS4)
++/* PS4: Mesa (zink), with no libGL: OpenGL comes from eglGetProcAddress() */
++#define DEFAULT_OGL        "libEGL.so.1"
++#define DEFAULT_EGL        "libEGL.so.1"
++#define DEFAULT_OGL_ES2    "libGLESv2.so.2"
++#define DEFAULT_OGL_ES_PVR "libGLES_CM.so.1"
++#define DEFAULT_OGL_ES     "libGLESv1_CM.so.1"
++
+ #elif defined(__OpenBSD__)
+ /* OpenBSD */
+ #define DEFAULT_OGL        "libGL.so"
+diff --git a/src/video/SDL_sysvideo.h b/src/video/SDL_sysvideo.h
+index faf598be3..877c87042 100644
+--- a/src/video/SDL_sysvideo.h
++++ b/src/video/SDL_sysvideo.h
+@@ -466,6 +466,7 @@ extern VideoBootStrap PND_bootstrap;
+ extern VideoBootStrap UIKIT_bootstrap;
+ extern VideoBootStrap Android_bootstrap;
+ extern VideoBootStrap PS2_bootstrap;
++extern VideoBootStrap PS4_bootstrap;
+ extern VideoBootStrap PSP_bootstrap;
+ extern VideoBootStrap VITA_bootstrap;
+ extern VideoBootStrap RISCOS_bootstrap;
+diff --git a/src/video/SDL_video.c b/src/video/SDL_video.c
+index 2f6c631d1..cec74eadd 100644
+--- a/src/video/SDL_video.c
++++ b/src/video/SDL_video.c
+@@ -108,6 +108,9 @@ static VideoBootStrap *bootstrap[] = {
+ #ifdef SDL_VIDEO_DRIVER_PS2
+     &PS2_bootstrap,
+ #endif
++#ifdef SDL_VIDEO_DRIVER_PS4
++    &PS4_bootstrap,
++#endif
+ #ifdef SDL_VIDEO_DRIVER_PSP
+     &PSP_bootstrap,
+ #endif
+diff --git a/src/video/ps4/SDL_ps4keyboard.c b/src/video/ps4/SDL_ps4keyboard.c
+new file mode 100644
+index 000000000..0126a3ea9
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4keyboard.c
+@@ -0,0 +1,472 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifdef SDL_VIDEO_DRIVER_PS4
++
++/* Keyboards on the PS4.
++
++   A USB or Bluetooth keyboard is read with libSceKeyboard, which reports
++   the keys held down as USB HID usages, the same numbers as SDL's
++   scancodes. While text input is on, the keys also give text, as on a US
++   keyboard.
++
++   The on-screen keyboard is the system's IME dialog (libSceImeDialog): the
++   text it returns is sent as text input, followed by a press of Return.
++
++   The SDK has no link stubs for either library, so they are loaded when the
++   video driver starts. */
++
++#include "SDL_events.h"
++#include "../../events/SDL_keyboard_c.h"
++#include "../../core/ps4/SDL_ps4.h"
++
++#include "SDL_ps4keyboard.h"
++
++/* libSceKeyboard */
++
++#define PS4_KEYBOARD_MAX_KEYCODES 16
++
++#define PS4_KEYBOARD_LOCK_NUM    0x01
++#define PS4_KEYBOARD_LOCK_CAPS   0x02
++#define PS4_KEYBOARD_LOCK_SCROLL 0x04
++
++typedef struct PS4_KeyboardData
++{
++    Uint64 timestamp;
++    Uint64 reserve0;
++    Uint8 connected;
++    Uint8 reserve1[3];
++    int length;                 /* how many keys are down */
++    Uint32 locks;
++    Uint32 modifiers;           /* as in a USB HID keyboard report */
++    Uint16 keycodes[PS4_KEYBOARD_MAX_KEYCODES];
++    Uint8 reserve2[32];
++} PS4_KeyboardData;
++
++SDL_COMPILE_TIME_ASSERT(PS4_KeyboardData, sizeof(PS4_KeyboardData) == 96);
++
++static void *keyboard_module = NULL;
++static int (*PS4_sceKeyboardInit)(void);
++static int (*PS4_sceKeyboardOpen)(int user_id, int type, int index, const void *param);
++static int (*PS4_sceKeyboardClose)(int handle);
++static int (*PS4_sceKeyboardReadState)(int handle, PS4_KeyboardData *data);
++
++static int keyboard_handle = -1;
++static Uint8 keyboard_keys[SDL_NUM_SCANCODES];
++static Uint32 keyboard_modifiers;
++static Uint32 keyboard_locks;
++
++/* Modifier bits, from the least significant one, as a USB keyboard has them */
++static const SDL_Scancode modifier_scancodes[8] = {
++    SDL_SCANCODE_LCTRL, SDL_SCANCODE_LSHIFT, SDL_SCANCODE_LALT, SDL_SCANCODE_LGUI,
++    SDL_SCANCODE_RCTRL, SDL_SCANCODE_RSHIFT, SDL_SCANCODE_RALT, SDL_SCANCODE_RGUI
++};
++
++int PS4_Keyboard_Init(void)
++{
++    int user_id;
++    int err;
++
++    if (keyboard_handle >= 0) {
++        return 0;
++    }
++
++    SDL_zeroa(keyboard_keys);
++    keyboard_modifiers = 0;
++    keyboard_locks = 0;
++
++    if (!keyboard_module) {
++        keyboard_module = PS4_LoadSystemModule(PS4_SYSMODULE_KEYBOARD, "libSceKeyboard.sprx");
++        if (!keyboard_module) {
++            return -1;
++        }
++    }
++
++    PS4_sceKeyboardInit = PS4_LoadFunction(keyboard_module, "sceKeyboardInit");
++    PS4_sceKeyboardOpen = PS4_LoadFunction(keyboard_module, "sceKeyboardOpen");
++    PS4_sceKeyboardClose = PS4_LoadFunction(keyboard_module, "sceKeyboardClose");
++    PS4_sceKeyboardReadState = PS4_LoadFunction(keyboard_module, "sceKeyboardReadState");
++    if (!PS4_sceKeyboardInit || !PS4_sceKeyboardOpen ||
++        !PS4_sceKeyboardClose || !PS4_sceKeyboardReadState) {
++        return -1;
++    }
++
++    err = PS4_sceKeyboardInit();
++    if (err < 0) {
++        return SDL_SetError("sceKeyboardInit: 0x%08x", (unsigned)err);
++    }
++
++    user_id = PS4_GetForegroundUser();
++    if (user_id == PS4_USER_ID_INVALID) {
++        return SDL_SetError("No user to open the keyboard for");
++    }
++
++    err = PS4_sceKeyboardOpen(user_id, 0, 0, NULL);
++    if (err < 0) {
++        return SDL_SetError("sceKeyboardOpen: 0x%08x", (unsigned)err);
++    }
++    keyboard_handle = err;
++
++    return 0;
++}
++
++/* The text a key gives on a US keyboard, or 0 for none. */
++static char PS4_Keyboard_KeyText(SDL_Scancode scancode, SDL_bool shift, SDL_bool caps, SDL_bool num)
++{
++    static const char shifted_digits[] = "!@#$%^&*()";
++    static const struct
++    {
++        SDL_Scancode scancode;
++        char normal;
++        char shifted;
++    } punctuation[] = {
++        { SDL_SCANCODE_SPACE, ' ', ' ' },
++        { SDL_SCANCODE_MINUS, '-', '_' },
++        { SDL_SCANCODE_EQUALS, '=', '+' },
++        { SDL_SCANCODE_LEFTBRACKET, '[', '{' },
++        { SDL_SCANCODE_RIGHTBRACKET, ']', '}' },
++        { SDL_SCANCODE_BACKSLASH, '\\', '|' },
++        { SDL_SCANCODE_NONUSHASH, '#', '~' },
++        { SDL_SCANCODE_SEMICOLON, ';', ':' },
++        { SDL_SCANCODE_APOSTROPHE, '\'', '"' },
++        { SDL_SCANCODE_GRAVE, '`', '~' },
++        { SDL_SCANCODE_COMMA, ',', '<' },
++        { SDL_SCANCODE_PERIOD, '.', '>' },
++        { SDL_SCANCODE_SLASH, '/', '?' },
++        { SDL_SCANCODE_NONUSBACKSLASH, '\\', '|' },
++        { SDL_SCANCODE_KP_DIVIDE, '/', '/' },
++        { SDL_SCANCODE_KP_MULTIPLY, '*', '*' },
++        { SDL_SCANCODE_KP_MINUS, '-', '-' },
++        { SDL_SCANCODE_KP_PLUS, '+', '+' },
++    };
++    int i;
++
++    if (scancode >= SDL_SCANCODE_A && scancode <= SDL_SCANCODE_Z) {
++        char c = (char)('a' + (scancode - SDL_SCANCODE_A));
++        return (shift != caps) ? (char)(c - 'a' + 'A') : c;
++    }
++    if (scancode >= SDL_SCANCODE_1 && scancode <= SDL_SCANCODE_0) {
++        if (shift) {
++            return shifted_digits[scancode - SDL_SCANCODE_1];
++        }
++        return (scancode == SDL_SCANCODE_0) ? '0' : (char)('1' + (scancode - SDL_SCANCODE_1));
++    }
++    if (num && scancode >= SDL_SCANCODE_KP_1 && scancode <= SDL_SCANCODE_KP_0) {
++        return (scancode == SDL_SCANCODE_KP_0) ? '0' : (char)('1' + (scancode - SDL_SCANCODE_KP_1));
++    }
++    if (num && scancode == SDL_SCANCODE_KP_PERIOD) {
++        return '.';
++    }
++    for (i = 0; i < (int)SDL_arraysize(punctuation); i++) {
++        if (punctuation[i].scancode == scancode) {
++            return shift ? punctuation[i].shifted : punctuation[i].normal;
++        }
++    }
++    return 0;
++}
++
++static void PS4_Keyboard_SetKeys(const Uint8 *keys, Uint32 modifiers)
++{
++    const SDL_bool shift = (modifiers & 0x22) ? SDL_TRUE : SDL_FALSE;
++    const SDL_bool ctrl_alt_gui = (modifiers & 0xdd) ? SDL_TRUE : SDL_FALSE;
++    const SDL_bool caps = (keyboard_locks & PS4_KEYBOARD_LOCK_CAPS) ? SDL_TRUE : SDL_FALSE;
++    const SDL_bool num = (keyboard_locks & PS4_KEYBOARD_LOCK_NUM) ? SDL_TRUE : SDL_FALSE;
++    Uint32 changed = keyboard_modifiers ^ modifiers;
++    char text[2];
++    int i;
++
++    for (i = 0; i < 8; i++) {
++        if (changed & (1u << i)) {
++            SDL_SendKeyboardKey((modifiers & (1u << i)) ? SDL_PRESSED : SDL_RELEASED,
++                                modifier_scancodes[i]);
++        }
++    }
++    keyboard_modifiers = modifiers;
++
++    for (i = 0; i < SDL_NUM_SCANCODES; i++) {
++        if (keys[i] == keyboard_keys[i]) {
++            continue;
++        }
++        keyboard_keys[i] = keys[i];
++        SDL_SendKeyboardKey(keys[i] ? SDL_PRESSED : SDL_RELEASED, (SDL_Scancode)i);
++
++        if (keys[i] && !ctrl_alt_gui && SDL_IsTextInputActive()) {
++            text[0] = PS4_Keyboard_KeyText((SDL_Scancode)i, shift, caps, num);
++            text[1] = '\0';
++            if (text[0]) {
++                SDL_SendKeyboardText(text);
++            }
++        }
++    }
++}
++
++void PS4_Keyboard_PumpEvents(void)
++{
++    Uint8 keys[SDL_NUM_SCANCODES];
++    PS4_KeyboardData data;
++    Uint32 modifiers = 0;
++    int i;
++
++    if (keyboard_handle < 0) {
++        return;
++    }
++
++    SDL_zero(data);
++    SDL_zeroa(keys);
++
++    /* On a read error or with no keyboard, everything is let go of. */
++    if (PS4_sceKeyboardReadState(keyboard_handle, &data) == 0 && data.connected) {
++        int length = SDL_clamp(data.length, 0, PS4_KEYBOARD_MAX_KEYCODES);
++
++        for (i = 0; i < length; i++) {
++            /* 0 is no key, 1 to 3 are the keyboard's errors, and the
++               modifiers come from their own bits */
++            if (data.keycodes[i] > 3 && data.keycodes[i] < SDL_NUM_SCANCODES &&
++                (data.keycodes[i] < SDL_SCANCODE_LCTRL || data.keycodes[i] > SDL_SCANCODE_RGUI)) {
++                keys[data.keycodes[i]] = 1;
++            }
++        }
++        modifiers = data.modifiers & 0xff;
++
++        if (data.locks != keyboard_locks) {
++            keyboard_locks = data.locks;
++            SDL_ToggleModState(KMOD_NUM, (keyboard_locks & PS4_KEYBOARD_LOCK_NUM) ? SDL_TRUE : SDL_FALSE);
++            SDL_ToggleModState(KMOD_CAPS, (keyboard_locks & PS4_KEYBOARD_LOCK_CAPS) ? SDL_TRUE : SDL_FALSE);
++            SDL_ToggleModState(KMOD_SCROLL, (keyboard_locks & PS4_KEYBOARD_LOCK_SCROLL) ? SDL_TRUE : SDL_FALSE);
++        }
++    }
++
++    PS4_Keyboard_SetKeys(keys, modifiers);
++}
++
++void PS4_Keyboard_Quit(void)
++{
++    if (keyboard_handle >= 0) {
++        PS4_sceKeyboardClose(keyboard_handle);
++        keyboard_handle = -1;
++    }
++}
++
++/* libSceImeDialog */
++
++typedef enum
++{
++    PS4_IME_DIALOG_STATUS_NONE = 0,
++    PS4_IME_DIALOG_STATUS_RUNNING = 1,
++    PS4_IME_DIALOG_STATUS_FINISHED = 2
++} PS4_ImeDialogStatus;
++
++typedef enum
++{
++    PS4_IME_DIALOG_END_STATUS_OK = 0,
++    PS4_IME_DIALOG_END_STATUS_USER_CANCELED = 1,
++    PS4_IME_DIALOG_END_STATUS_ABORTED = 2
++} PS4_ImeDialogEndStatus;
++
++typedef struct PS4_ImeDialogParam
++{
++    int userId;
++    int type;                   /* 0: default */
++    Uint64 supportedLanguages;  /* 0: all */
++    int enterLabel;             /* 0: default */
++    int inputMethod;            /* 0: default */
++    void *filter;
++    Uint32 option;
++    Uint32 maxTextLength;
++    Uint16 *inputTextBuffer;    /* UTF-16 */
++    float posx;
++    float posy;
++    int horizontalAlignment;
++    int verticalAlignment;
++    const Uint16 *placeholder;
++    const Uint16 *title;
++    Sint8 reserved[16];
++} PS4_ImeDialogParam;
++
++typedef struct PS4_ImeDialogResult
++{
++    int endstatus;
++    Sint8 reserved[12];
++} PS4_ImeDialogResult;
++
++SDL_COMPILE_TIME_ASSERT(PS4_ImeDialogParam, sizeof(PS4_ImeDialogParam) == 96);
++
++#define PS4_IME_DIALOG_MAX_TEXT_LENGTH 2048
++
++/* Where the dialog goes: the middle of the 1920x1080 screen the system
++   draws it on. */
++#define PS4_IME_DIALOG_POS_X       960.0f
++#define PS4_IME_DIALOG_POS_Y       540.0f
++#define PS4_IME_HALIGN_CENTER      1
++#define PS4_IME_VALIGN_CENTER      1
++
++static void *ime_dialog_module = NULL;
++static int (*PS4_sceImeDialogInit)(const PS4_ImeDialogParam *param, const void *extended);
++static int (*PS4_sceImeDialogGetStatus)(void);
++static int (*PS4_sceImeDialogGetResult)(PS4_ImeDialogResult *result);
++static int (*PS4_sceImeDialogTerm)(void);
++
++static SDL_bool ime_dialog_shown = SDL_FALSE;
++static Uint16 ime_dialog_text[PS4_IME_DIALOG_MAX_TEXT_LENGTH + 1];
++static Uint16 ime_dialog_title[1];
++
++static SDL_bool PS4_ImeDialog_Load(void)
++{
++    void *common_dialog;
++
++    if (ime_dialog_module) {
++        return SDL_TRUE;
++    }
++
++    /* The dialog is one of the system's common dialogs. */
++    common_dialog = PS4_LoadSystemModule(PS4_SYSMODULE_INTERNAL_COMMON_DIALOG, "libSceCommonDialog.sprx");
++    if (common_dialog) {
++        int (*PS4_sceCommonDialogInitialize)(void) =
++            PS4_LoadFunction(common_dialog, "sceCommonDialogInitialize");
++        if (PS4_sceCommonDialogInitialize) {
++            PS4_sceCommonDialogInitialize(); /* fails harmlessly if already done */
++        }
++    }
++
++    ime_dialog_module = PS4_LoadSystemModule(PS4_SYSMODULE_IME_DIALOG, "libSceImeDialog.sprx");
++    if (!ime_dialog_module) {
++        return SDL_FALSE;
++    }
++
++    PS4_sceImeDialogInit = PS4_LoadFunction(ime_dialog_module, "sceImeDialogInit");
++    PS4_sceImeDialogGetStatus = PS4_LoadFunction(ime_dialog_module, "sceImeDialogGetStatus");
++    PS4_sceImeDialogGetResult = PS4_LoadFunction(ime_dialog_module, "sceImeDialogGetResult");
++    PS4_sceImeDialogTerm = PS4_LoadFunction(ime_dialog_module, "sceImeDialogTerm");
++    if (!PS4_sceImeDialogInit || !PS4_sceImeDialogGetStatus ||
++        !PS4_sceImeDialogGetResult || !PS4_sceImeDialogTerm) {
++        ime_dialog_module = NULL;
++        return SDL_FALSE;
++    }
++
++    return SDL_TRUE;
++}
++
++static void PS4_ImeDialog_SendText(void)
++{
++    size_t length = 0;
++    char *utf8;
++
++    while (length < PS4_IME_DIALOG_MAX_TEXT_LENGTH && ime_dialog_text[length]) {
++        length++;
++    }
++    if (!length) {
++        return;
++    }
++
++    utf8 = SDL_iconv_string("UTF-8", "UTF-16LE", (const char *)ime_dialog_text,
++                            length * sizeof(Uint16));
++    if (utf8) {
++        SDL_SendKeyboardText(utf8);
++        SDL_free(utf8);
++    }
++}
++
++void PS4_ImeDialog_PumpEvents(void)
++{
++    PS4_ImeDialogResult result;
++
++    if (!ime_dialog_shown) {
++        return;
++    }
++
++    switch (PS4_sceImeDialogGetStatus()) {
++    case PS4_IME_DIALOG_STATUS_RUNNING:
++        return;
++
++    case PS4_IME_DIALOG_STATUS_FINISHED:
++        SDL_zero(result);
++        if (PS4_sceImeDialogGetResult(&result) == 0 &&
++            result.endstatus == PS4_IME_DIALOG_END_STATUS_OK) {
++            PS4_ImeDialog_SendText();
++            SDL_SendKeyboardKeyAutoRelease(SDL_SCANCODE_RETURN);
++        }
++        break;
++
++    default:
++        break;
++    }
++
++    PS4_sceImeDialogTerm();
++    ime_dialog_shown = SDL_FALSE;
++}
++
++void PS4_ImeDialog_Quit(void)
++{
++    if (ime_dialog_shown) {
++        PS4_sceImeDialogTerm();
++        ime_dialog_shown = SDL_FALSE;
++    }
++}
++
++SDL_bool PS4_HasScreenKeyboardSupport(_THIS)
++{
++    return SDL_TRUE;
++}
++
++void PS4_ShowScreenKeyboard(_THIS, SDL_Window *window)
++{
++    PS4_ImeDialogParam param;
++    int err;
++
++    if (ime_dialog_shown || !PS4_ImeDialog_Load()) {
++        return;
++    }
++
++    SDL_zeroa(ime_dialog_text);
++    SDL_zeroa(ime_dialog_title);
++
++    SDL_zero(param);
++    param.userId = PS4_GetForegroundUser();
++    param.maxTextLength = PS4_IME_DIALOG_MAX_TEXT_LENGTH;
++    param.inputTextBuffer = ime_dialog_text;
++    param.title = ime_dialog_title;
++    param.posx = PS4_IME_DIALOG_POS_X;
++    param.posy = PS4_IME_DIALOG_POS_Y;
++    param.horizontalAlignment = PS4_IME_HALIGN_CENTER;
++    param.verticalAlignment = PS4_IME_VALIGN_CENTER;
++
++    err = PS4_sceImeDialogInit(&param, NULL);
++    if (err < 0) {
++        SDL_SetError("sceImeDialogInit: 0x%08x", (unsigned)err);
++        return;
++    }
++    ime_dialog_shown = SDL_TRUE;
++}
++
++void PS4_HideScreenKeyboard(_THIS, SDL_Window *window)
++{
++    PS4_ImeDialog_Quit();
++}
++
++SDL_bool PS4_IsScreenKeyboardShown(_THIS, SDL_Window *window)
++{
++    return ime_dialog_shown;
++}
++
++#endif /* SDL_VIDEO_DRIVER_PS4 */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4keyboard.h b/src/video/ps4/SDL_ps4keyboard.h
+new file mode 100644
+index 000000000..be86359d2
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4keyboard.h
+@@ -0,0 +1,43 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifndef SDL_ps4keyboard_h_
++#define SDL_ps4keyboard_h_
++
++#include "../SDL_sysvideo.h"
++
++/* A USB or Bluetooth keyboard (libSceKeyboard) */
++extern int PS4_Keyboard_Init(void);
++extern void PS4_Keyboard_PumpEvents(void);
++extern void PS4_Keyboard_Quit(void);
++
++/* The on-screen keyboard (libSceImeDialog) */
++extern void PS4_ImeDialog_PumpEvents(void);
++extern void PS4_ImeDialog_Quit(void);
++extern SDL_bool PS4_HasScreenKeyboardSupport(_THIS);
++extern void PS4_ShowScreenKeyboard(_THIS, SDL_Window *window);
++extern void PS4_HideScreenKeyboard(_THIS, SDL_Window *window);
++extern SDL_bool PS4_IsScreenKeyboardShown(_THIS, SDL_Window *window);
++
++#endif /* SDL_ps4keyboard_h_ */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4opengles.c b/src/video/ps4/SDL_ps4opengles.c
+new file mode 100644
+index 000000000..51e201edb
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4opengles.c
+@@ -0,0 +1,86 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#if defined(SDL_VIDEO_DRIVER_PS4) && defined(SDL_VIDEO_OPENGL_EGL)
++
++#include "SDL_ps4video.h"
++
++/* OpenGL and OpenGL ES through EGL, as on Linux without a window system:
++   Mesa's libEGL.so.1 (zink on RADV, and its "videoout" EGL platform) and
++   libGLESv2.so.2, loaded when a program first asks for a GL window. Mesa
++   has no libGL on the PS4: OpenGL functions come from eglGetProcAddress().
++   The display is EGL_DEFAULT_DISPLAY, and any non-zero native window is the
++   screen. */
++
++#define PS4_EGL_NATIVE_WINDOW ((NativeWindowType)1)
++
++int PS4_GLES_LoadLibrary(_THIS, const char *path)
++{
++    return SDL_EGL_LoadLibrary(_this, path, EGL_DEFAULT_DISPLAY, 0);
++}
++
++/* The EGL display is terminated, but Mesa's libraries stay loaded: they
++   register atexit() handlers, which must still be there when the program
++   exits, and keep VideoOut for the whole process. Loading them again just
++   takes another reference. */
++void PS4_GLES_UnloadLibrary(_THIS)
++{
++    if (_this->egl_data) {
++        _this->egl_data->egl_dll_handle = NULL;
++        _this->egl_data->opengl_dll_handle = NULL;
++    }
++    SDL_EGL_UnloadLibrary(_this);
++}
++
++int PS4_GLES_CreateSurface(_THIS, SDL_Window *window)
++{
++    SDL_WindowData *data = (SDL_WindowData *)window->driverdata;
++
++    if (!_this->egl_data && SDL_GL_LoadLibrary(NULL) < 0) {
++        return -1;
++    }
++
++    data->egl_surface = SDL_EGL_CreateSurface(_this, PS4_EGL_NATIVE_WINDOW);
++    if (data->egl_surface == EGL_NO_SURFACE) {
++        return SDL_SetError("Could not create the EGL window surface");
++    }
++    return 0;
++}
++
++void PS4_GLES_DestroySurface(_THIS, SDL_Window *window)
++{
++    SDL_WindowData *data = (SDL_WindowData *)window->driverdata;
++
++    if (data->egl_surface != EGL_NO_SURFACE) {
++        SDL_EGL_MakeCurrent(_this, EGL_NO_SURFACE, NULL);
++        SDL_EGL_DestroySurface(_this, data->egl_surface);
++        data->egl_surface = EGL_NO_SURFACE;
++    }
++}
++
++SDL_EGL_CreateContext_impl(PS4)
++SDL_EGL_MakeCurrent_impl(PS4)
++SDL_EGL_SwapWindow_impl(PS4)
++
++#endif /* SDL_VIDEO_DRIVER_PS4 && SDL_VIDEO_OPENGL_EGL */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
+new file mode 100644
+index 000000000..39bb3ca7a
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4remote.c
+@@ -0,0 +1,128 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifdef SDL_VIDEO_DRIVER_PS4
++
++/* A media remote, on libScePad's remote control port, as keys.
++
++   The PS4 has no HDMI-CEC remote, and its media remotes are not the
++   PS5's: only what a remote reports as the controller's buttons is used
++   (the arrows, X, O and OPTIONS), not the PS5's table of CEC key codes. When
++   the port cannot be opened, there is simply no remote. */
++
++#include "SDL_events.h"
++#include "../../events/SDL_keyboard_c.h"
++#include "../../core/ps4/SDL_ps4.h"
++#include "../../joystick/ps4/SDL_ps4joystick.h"
++
++#include "SDL_ps4remote.h"
++
++static const struct
++{
++    Uint32 button;
++    SDL_Scancode scancode;
++} remote_button_map[] = {
++    { PS4_PAD_BUTTON_UP, SDL_SCANCODE_UP },
++    { PS4_PAD_BUTTON_DOWN, SDL_SCANCODE_DOWN },
++    { PS4_PAD_BUTTON_LEFT, SDL_SCANCODE_LEFT },
++    { PS4_PAD_BUTTON_RIGHT, SDL_SCANCODE_RIGHT },
++    { PS4_PAD_BUTTON_CROSS, SDL_SCANCODE_RETURN },  /* "enter" */
++    { PS4_PAD_BUTTON_CIRCLE, SDL_SCANCODE_ESCAPE }, /* "back" */
++    { PS4_PAD_BUTTON_OPTIONS, SDL_SCANCODE_MENU },
++};
++
++static int remote_handle = -1;
++static Uint32 remote_buttons = 0;
++
++static void PS4_Remote_SetButtons(Uint32 buttons)
++{
++    Uint32 changed = remote_buttons ^ buttons;
++    int i;
++
++    remote_buttons = buttons;
++    for (i = 0; i < (int)SDL_arraysize(remote_button_map); i++) {
++        if (changed & remote_button_map[i].button) {
++            SDL_SendVirtualKeyboardKey((buttons & remote_button_map[i].button) ? SDL_PRESSED : SDL_RELEASED,
++                                       remote_button_map[i].scancode);
++        }
++    }
++}
++
++int PS4_Remote_Init(void)
++{
++    int handle;
++
++    if (remote_handle >= 0) {
++        return 0;
++    }
++    remote_buttons = 0;
++
++    if (PS4_InitPad() < 0) {
++        return -1;
++    }
++
++    handle = scePadOpen(PS4_USER_ID_SYSTEM, PS4_PAD_PORT_TYPE_REMOTE_CONTROL, 0, NULL);
++    if ((unsigned)handle == PS4_PAD_ERROR_ALREADY_OPENED) {
++        handle = scePadGetHandle(PS4_USER_ID_SYSTEM, PS4_PAD_PORT_TYPE_REMOTE_CONTROL, 0);
++    }
++    if (handle < 0) {
++        return SDL_SetError("scePadOpen: 0x%08x", (unsigned)handle);
++    }
++    remote_handle = handle;
++
++    return 0;
++}
++
++void PS4_Remote_PumpEvents(void)
++{
++    PS4_PadData pad;
++    Uint32 buttons = 0;
++    int i;
++
++    if (remote_handle < 0) {
++        return;
++    }
++
++    /* On a read error or with no remote, everything is let go of. */
++    SDL_zero(pad);
++    if (scePadReadState(remote_handle, &pad) == 0 && pad.connected) {
++        for (i = 0; i < (int)SDL_arraysize(remote_button_map); i++) {
++            buttons |= pad.buttons & remote_button_map[i].button;
++        }
++    }
++
++    PS4_Remote_SetButtons(buttons);
++}
++
++void PS4_Remote_Quit(void)
++{
++    PS4_Remote_SetButtons(0);
++
++    if (remote_handle >= 0) {
++        scePadClose(remote_handle);
++        remote_handle = -1;
++    }
++}
++
++#endif /* SDL_VIDEO_DRIVER_PS4 */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4remote.h b/src/video/ps4/SDL_ps4remote.h
+new file mode 100644
+index 000000000..ef373e81d
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4remote.h
+@@ -0,0 +1,32 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifndef SDL_ps4remote_h_
++#define SDL_ps4remote_h_
++
++extern int PS4_Remote_Init(void);
++extern void PS4_Remote_PumpEvents(void);
++extern void PS4_Remote_Quit(void);
++
++#endif /* SDL_ps4remote_h_ */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4video.c b/src/video/ps4/SDL_ps4video.c
+new file mode 100644
+index 000000000..a1bdbcf53
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4video.c
+@@ -0,0 +1,227 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifdef SDL_VIDEO_DRIVER_PS4
++
++/* The PS4's display, drawn on with the GPU only: OpenGL and OpenGL ES
++   through EGL, or Vulkan through VK_KHR_display, all of them Mesa's (zink
++   and RADV), which owns VideoOut.
++
++   A window is the screen: it is always the display's size, the way windows
++   are on Linux without a window system (KMSDRM). There is no software
++   framebuffer: windows drawn in software (SDL_GetWindowSurface(), the
++   software renderer) are presented by SDL itself through its OpenGL or
++   OpenGL ES renderer. */
++
++#include "../../events/SDL_keyboard_c.h"
++#include "../../events/SDL_mouse_c.h"
++#include "../../events/SDL_windowevents_c.h"
++#include "../../core/ps4/SDL_ps4.h"
++
++#include "SDL_ps4video.h"
++#include "SDL_ps4keyboard.h"
++#include "SDL_ps4remote.h"
++#include "SDL_ps4vulkan.h"
++
++static int PS4_VideoInit(_THIS)
++{
++    SDL_DisplayMode mode;
++
++    /* A program started from its package shows the splash screen until it
++       has something on the screen to show instead. */
++    sceSystemServiceHideSplashScreen();
++
++    SDL_zero(mode);
++    mode.format = SDL_PIXELFORMAT_ARGB8888; /* VideoOut's B8G8R8A8 */
++    mode.w = PS4_DISPLAY_WIDTH;
++    mode.h = PS4_DISPLAY_HEIGHT;
++    mode.refresh_rate = PS4_DISPLAY_REFRESH_RATE;
++
++    if (SDL_AddBasicVideoDisplay(&mode) < 0) {
++        return -1;
++    }
++
++    /* Input that comes through the video driver, as keys. Neither a
++       keyboard nor a remote needs to be there. */
++    if (PS4_Keyboard_Init() < 0) {
++        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "ps4: no keyboard: %s", SDL_GetError());
++    }
++    if (PS4_Remote_Init() < 0) {
++        SDL_LogDebug(SDL_LOG_CATEGORY_VIDEO, "ps4: no remote: %s", SDL_GetError());
++    }
++    SDL_ClearError();
++
++    return 0;
++}
++
++static void PS4_VideoQuit(_THIS)
++{
++    PS4_ImeDialog_Quit();
++    PS4_Remote_Quit();
++    PS4_Keyboard_Quit();
++}
++
++static void PS4_GetDisplayModes(_THIS, SDL_VideoDisplay *display)
++{
++    SDL_AddDisplayMode(display, &display->desktop_mode);
++}
++
++static int PS4_SetDisplayMode(_THIS, SDL_VideoDisplay *display, SDL_DisplayMode *mode)
++{
++    return 0;
++}
++
++/* Whatever size a program asks for, its window is the screen. */
++static void PS4_FillScreen(SDL_Window *window)
++{
++    window->x = 0;
++    window->y = 0;
++    SDL_SendWindowEvent(window, SDL_WINDOWEVENT_RESIZED,
++                        PS4_DISPLAY_WIDTH, PS4_DISPLAY_HEIGHT);
++}
++
++static int PS4_CreateWindow(_THIS, SDL_Window *window)
++{
++    SDL_WindowData *data;
++
++    data = (SDL_WindowData *)SDL_calloc(1, sizeof(SDL_WindowData));
++    if (!data) {
++        return SDL_OutOfMemory();
++    }
++    window->driverdata = data;
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++    data->egl_surface = EGL_NO_SURFACE;
++    if (window->flags & SDL_WINDOW_OPENGL) {
++        if (PS4_GLES_CreateSurface(_this, window) < 0) {
++            SDL_free(data);
++            window->driverdata = NULL;
++            return -1;
++        }
++    }
++#endif
++
++    PS4_FillScreen(window);
++    SDL_SetMouseFocus(window);
++    SDL_SetKeyboardFocus(window);
++
++    return 0;
++}
++
++static void PS4_SetWindowSize(_THIS, SDL_Window *window)
++{
++    PS4_FillScreen(window);
++}
++
++static void PS4_SetWindowFullscreen(_THIS, SDL_Window *window,
++                                    SDL_VideoDisplay *display,
++                                    SDL_bool fullscreen)
++{
++    PS4_FillScreen(window);
++}
++
++static void PS4_DestroyWindow(_THIS, SDL_Window *window)
++{
++    if (!window->driverdata) {
++        return;
++    }
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++    PS4_GLES_DestroySurface(_this, window);
++#endif
++
++    SDL_free(window->driverdata);
++    window->driverdata = NULL;
++}
++
++static void PS4_PumpEvents(_THIS)
++{
++    PS4_Keyboard_PumpEvents();
++    PS4_ImeDialog_PumpEvents();
++    PS4_Remote_PumpEvents();
++}
++
++static void PS4_DeleteDevice(SDL_VideoDevice *device)
++{
++    SDL_free(device);
++}
++
++static SDL_VideoDevice *PS4_CreateDevice(void)
++{
++    SDL_VideoDevice *device;
++
++    device = (SDL_VideoDevice *)SDL_calloc(1, sizeof(SDL_VideoDevice));
++    if (!device) {
++        SDL_OutOfMemory();
++        return NULL;
++    }
++
++    device->VideoInit = PS4_VideoInit;
++    device->VideoQuit = PS4_VideoQuit;
++    device->GetDisplayModes = PS4_GetDisplayModes;
++    device->SetDisplayMode = PS4_SetDisplayMode;
++    device->PumpEvents = PS4_PumpEvents;
++    device->CreateSDLWindow = PS4_CreateWindow;
++    device->SetWindowSize = PS4_SetWindowSize;
++    device->SetWindowFullscreen = PS4_SetWindowFullscreen;
++    device->DestroyWindow = PS4_DestroyWindow;
++    device->HasScreenKeyboardSupport = PS4_HasScreenKeyboardSupport;
++    device->ShowScreenKeyboard = PS4_ShowScreenKeyboard;
++    device->HideScreenKeyboard = PS4_HideScreenKeyboard;
++    device->IsScreenKeyboardShown = PS4_IsScreenKeyboardShown;
++    device->free = PS4_DeleteDevice;
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++    device->GL_LoadLibrary = PS4_GLES_LoadLibrary;
++    device->GL_GetProcAddress = SDL_EGL_GetProcAddress;
++    device->GL_UnloadLibrary = PS4_GLES_UnloadLibrary;
++    device->GL_CreateContext = PS4_GLES_CreateContext;
++    device->GL_MakeCurrent = PS4_GLES_MakeCurrent;
++    device->GL_SetSwapInterval = SDL_EGL_SetSwapInterval;
++    device->GL_GetSwapInterval = SDL_EGL_GetSwapInterval;
++    device->GL_SwapWindow = PS4_GLES_SwapWindow;
++    device->GL_DeleteContext = SDL_EGL_DeleteContext;
++#endif
++
++#ifdef SDL_VIDEO_VULKAN
++    device->Vulkan_LoadLibrary = PS4_Vulkan_LoadLibrary;
++    device->Vulkan_UnloadLibrary = PS4_Vulkan_UnloadLibrary;
++    device->Vulkan_GetInstanceExtensions = PS4_Vulkan_GetInstanceExtensions;
++    device->Vulkan_CreateSurface = PS4_Vulkan_CreateSurface;
++#endif
++
++    /* One display, in one mode, which every window fills. */
++    device->quirk_flags = VIDEO_DEVICE_QUIRK_FULLSCREEN_ONLY |
++                          VIDEO_DEVICE_QUIRK_DISABLE_DISPLAY_MODE_SWITCHING;
++
++    return device;
++}
++
++VideoBootStrap PS4_bootstrap = {
++    "ps4", "Sony PS4 Video Driver",
++    PS4_CreateDevice,
++    NULL /* no ShowMessageBox implementation */
++};
++
++#endif /* SDL_VIDEO_DRIVER_PS4 */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4video.h b/src/video/ps4/SDL_ps4video.h
+new file mode 100644
+index 000000000..b0c0fdc70
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4video.h
+@@ -0,0 +1,58 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifndef SDL_ps4video_h_
++#define SDL_ps4video_h_
++
++#include "../SDL_sysvideo.h"
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++#include "../SDL_egl_c.h"
++#endif
++
++/* The display: Mesa's one VideoOut mode, which its EGL platform and its
++   VK_KHR_display present in, 1920x1080 at 59.94 Hz. */
++#define PS4_DISPLAY_WIDTH        1920
++#define PS4_DISPLAY_HEIGHT       1080
++#define PS4_DISPLAY_REFRESH_RATE 60
++
++typedef struct SDL_WindowData
++{
++#ifdef SDL_VIDEO_OPENGL_EGL
++    EGLSurface egl_surface;
++#endif
++    int unused;
++} SDL_WindowData;
++
++#ifdef SDL_VIDEO_OPENGL_EGL
++extern int PS4_GLES_LoadLibrary(_THIS, const char *path);
++extern void PS4_GLES_UnloadLibrary(_THIS);
++extern int PS4_GLES_CreateSurface(_THIS, SDL_Window *window);
++extern void PS4_GLES_DestroySurface(_THIS, SDL_Window *window);
++extern SDL_GLContext PS4_GLES_CreateContext(_THIS, SDL_Window *window);
++extern int PS4_GLES_MakeCurrent(_THIS, SDL_Window *window, SDL_GLContext context);
++extern int PS4_GLES_SwapWindow(_THIS, SDL_Window *window);
++#endif
++
++#endif /* SDL_ps4video_h_ */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4vulkan.c b/src/video/ps4/SDL_ps4vulkan.c
+new file mode 100644
+index 000000000..605829ab2
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4vulkan.c
+@@ -0,0 +1,146 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#if defined(SDL_VIDEO_VULKAN) && defined(SDL_VIDEO_DRIVER_PS4)
++
++/* Vulkan on the PS4's display: Mesa's RADV is the console's libvulkan.so.1
++   (there is no Vulkan loader), and it shows VideoOut as the one display of
++   VK_KHR_display. A window's surface is a display plane surface on it, as
++   with KMSDRM. */
++
++#include "SDL_loadso.h"
++#include "SDL_ps4vulkan.h"
++
++#define PS4_VULKAN_LIBRARY "libvulkan.so.1"
++
++int PS4_Vulkan_LoadLibrary(_THIS, const char *path)
++{
++    VkExtensionProperties *extensions = NULL;
++    Uint32 extension_count = 0;
++    SDL_bool has_surface_extension = SDL_FALSE;
++    SDL_bool has_display_extension = SDL_FALSE;
++    PFN_vkGetInstanceProcAddr vkGetInstanceProcAddr = NULL;
++    Uint32 i;
++
++    if (_this->vulkan_config.loader_handle) {
++        return SDL_SetError("Vulkan already loaded");
++    }
++
++    if (!path) {
++        path = SDL_getenv("SDL_VULKAN_LIBRARY");
++    }
++    if (!path) {
++        path = PS4_VULKAN_LIBRARY;
++    }
++
++    _this->vulkan_config.loader_handle = SDL_LoadObject(path);
++    if (!_this->vulkan_config.loader_handle) {
++        return -1;
++    }
++    SDL_strlcpy(_this->vulkan_config.loader_path, path,
++                SDL_arraysize(_this->vulkan_config.loader_path));
++
++    vkGetInstanceProcAddr = (PFN_vkGetInstanceProcAddr)SDL_LoadFunction(
++        _this->vulkan_config.loader_handle, "vkGetInstanceProcAddr");
++    if (!vkGetInstanceProcAddr) {
++        goto fail;
++    }
++    _this->vulkan_config.vkGetInstanceProcAddr = (void *)vkGetInstanceProcAddr;
++    _this->vulkan_config.vkEnumerateInstanceExtensionProperties =
++        (void *)vkGetInstanceProcAddr(VK_NULL_HANDLE, "vkEnumerateInstanceExtensionProperties");
++    if (!_this->vulkan_config.vkEnumerateInstanceExtensionProperties) {
++        goto fail;
++    }
++
++    extensions = SDL_Vulkan_CreateInstanceExtensionsList(
++        (PFN_vkEnumerateInstanceExtensionProperties)_this->vulkan_config.vkEnumerateInstanceExtensionProperties,
++        &extension_count);
++    if (!extensions) {
++        goto fail;
++    }
++    for (i = 0; i < extension_count; i++) {
++        if (SDL_strcmp(VK_KHR_SURFACE_EXTENSION_NAME, extensions[i].extensionName) == 0) {
++            has_surface_extension = SDL_TRUE;
++        } else if (SDL_strcmp(VK_KHR_DISPLAY_EXTENSION_NAME, extensions[i].extensionName) == 0) {
++            has_display_extension = SDL_TRUE;
++        }
++    }
++    SDL_free(extensions);
++
++    if (!has_surface_extension) {
++        SDL_SetError("Installed Vulkan doesn't implement the " VK_KHR_SURFACE_EXTENSION_NAME " extension");
++        goto fail;
++    }
++    if (!has_display_extension) {
++        SDL_SetError("Installed Vulkan doesn't implement the " VK_KHR_DISPLAY_EXTENSION_NAME " extension");
++        goto fail;
++    }
++
++    return 0;
++
++fail:
++    SDL_UnloadObject(_this->vulkan_config.loader_handle);
++    _this->vulkan_config.loader_handle = NULL;
++    return -1;
++}
++
++/* RADV stays loaded: it registers atexit() handlers, which must still be
++   there when the program exits, and keeps VideoOut and its framebuffers
++   for the whole process. Loading it again just takes another reference. */
++void PS4_Vulkan_UnloadLibrary(_THIS)
++{
++    _this->vulkan_config.loader_handle = NULL;
++    _this->vulkan_config.vkGetInstanceProcAddr = NULL;
++    _this->vulkan_config.vkEnumerateInstanceExtensionProperties = NULL;
++}
++
++SDL_bool PS4_Vulkan_GetInstanceExtensions(_THIS, SDL_Window *window,
++                                          unsigned *count, const char **names)
++{
++    static const char *const extensions[] = {
++        VK_KHR_SURFACE_EXTENSION_NAME,
++        VK_KHR_DISPLAY_EXTENSION_NAME
++    };
++
++    if (!_this->vulkan_config.loader_handle) {
++        SDL_SetError("Vulkan is not loaded");
++        return SDL_FALSE;
++    }
++    return SDL_Vulkan_GetInstanceExtensions_Helper(count, names,
++                                                   SDL_arraysize(extensions),
++                                                   extensions);
++}
++
++SDL_bool PS4_Vulkan_CreateSurface(_THIS, SDL_Window *window,
++                                  VkInstance instance, VkSurfaceKHR *surface)
++{
++    if (!_this->vulkan_config.loader_handle) {
++        SDL_SetError("Vulkan is not loaded");
++        return SDL_FALSE;
++    }
++    return SDL_Vulkan_Display_CreateSurface(_this->vulkan_config.vkGetInstanceProcAddr,
++                                            instance, surface);
++}
++
++#endif /* SDL_VIDEO_VULKAN && SDL_VIDEO_DRIVER_PS4 */
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/video/ps4/SDL_ps4vulkan.h b/src/video/ps4/SDL_ps4vulkan.h
+new file mode 100644
+index 000000000..efce3a15e
+--- /dev/null
++++ b/src/video/ps4/SDL_ps4vulkan.h
+@@ -0,0 +1,42 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "../../SDL_internal.h"
++
++#ifndef SDL_ps4vulkan_h_
++#define SDL_ps4vulkan_h_
++
++#include "../SDL_vulkan_internal.h"
++#include "../SDL_sysvideo.h"
++
++#if defined(SDL_VIDEO_VULKAN) && defined(SDL_VIDEO_DRIVER_PS4)
++
++extern int PS4_Vulkan_LoadLibrary(_THIS, const char *path);
++extern void PS4_Vulkan_UnloadLibrary(_THIS);
++extern SDL_bool PS4_Vulkan_GetInstanceExtensions(_THIS, SDL_Window *window,
++                                                 unsigned *count, const char **names);
++extern SDL_bool PS4_Vulkan_CreateSurface(_THIS, SDL_Window *window,
++                                         VkInstance instance, VkSurfaceKHR *surface);
++
++#endif
++
++#endif /* SDL_ps4vulkan_h_ */
++
++/* vi: set ts=4 sw=4 expandtab: */
+-- 
+2.43.0
+
