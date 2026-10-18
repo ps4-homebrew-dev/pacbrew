@@ -1,0 +1,49 @@
+pkgname=ps4-homebrew-ffmpeg
+pkgver=7.0.1
+pkgrel=1
+pkgdesc='Complete solution to record, convert and stream audio and video'
+arch=('any')
+url='https://ffmpeg.org'
+license=('LGPL' 'GPL')
+options=(!strip !libtool staticlibs)
+source=("https://ffmpeg.org/releases/ffmpeg-$pkgver.tar.xz"
+	"ffplay-with-game-controller-input.diff")
+sha256sums=('SKIP'
+	    '30f3119ad501d4ca16f3f2b7a4a194a82f36aad506ba05227fcbb50145da2d53')
+groups=('ps4-homebrew-dev')
+depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl' 'ps4-homebrew-freetype'
+	 'ps4-homebrew-libfribidi' 'ps4-homebrew-harfbuzz' 'ps4-homebrew-libass')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd ffmpeg-$pkgver
+
+    ./configure \
+	--prefix="${PREFIX}" --enable-cross-compile \
+	--cross-prefix="${PS4_HOMEBREW_SDK}/bin/orbis-" \
+	--enable-static --disable-shared \
+	--arch=x86_64 --target-os=freebsd \
+	--enable-openssl --enable-version3 \
+	--enable-libfreetype --enable-libfribidi --enable-libharfbuzz \
+	--enable-gpl \
+	--disable-debug --disable-doc \
+	--enable-libass \
+	--cc="${CC}" --cxx="${CXX}" --nm="${NM}" --strip="${STRIP}" \
+	--ar="${AR}" --ranlib="${RANLIB}" --pkg-config="${PKG_CONFIG}"
+    ${MAKE}
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd ffmpeg-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} install
+}

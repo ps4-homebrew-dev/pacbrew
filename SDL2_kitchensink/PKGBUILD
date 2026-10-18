@@ -1,0 +1,44 @@
+pkgname=ps4-homebrew-sdl2_kitchensink
+pkgver=2.0.0
+_tagsuffix="-a2"
+pkgrel=1
+pkgdesc="FFmpeg and SDL2 based library for audio and video playback, written in C99."
+arch=('any')
+url="https://katajakasa.github.io/SDL_kitchensink/"
+license=('MIT')
+source=("https://github.com/katajakasa/SDL_kitchensink/archive/refs/tags/$pkgver$_tagsuffix.tar.gz")
+sha256sums=('SKIP')
+
+options=(!strip !libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-sdl2' 'ps4-homebrew-ffmpeg' 'ps4-homebrew-libass')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL_kitchensink-$pkgver$_tagsuffix
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DBUILD_STATIC=YES \
+	     -DBUILD_SHARED=NO \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd SDL_kitchensink-$pkgver$_tagsuffix
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+
+    cd $DESTDIR/$PREFIX/lib
+    ln -s libSDL_kitchensink_static.a libSDL_kitchensink.a
+}
