@@ -7,7 +7,7 @@ url="https://github.com/libass/libass"
 license=('custom: ISC')
 options=(!strip !libtool staticlibs)
 source=("https://github.com/libass/libass/releases/download/$pkgver/libass-$pkgver.tar.xz")
-sha256sums=('SKIP')
+sha256sums=('eae425da50f0015c21f7b3a9c7262a910f0218af469e22e2931462fed3c50959')
 depends=('ps4-homebrew-libfribidi' 'ps4-homebrew-freetype' 'ps4-homebrew-harfbuzz'
 	'ps4-homebrew-fontconfig')
 makedepends=('ps4-homebrew-sdk')

@@ -7,7 +7,7 @@ url='https://github.com/libjpeg-turbo'
 license=('IJG')
 options=(!strip !libtool staticlibs)
 source=("https://github.com/libjpeg-turbo/libjpeg-turbo/releases/download/${pkgver}/libjpeg-turbo-${pkgver}.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('c2ce515a78d91b09023773ef2770d6b0df77d674e144de80d63e0389b3a15ca6')
 makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-openlibm')
 groups=('ps4-homebrew-dev')
 

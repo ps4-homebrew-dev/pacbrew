@@ -7,7 +7,7 @@ url=https://www.webmproject.org/
 license=(custom:BSD)
 options=(!strip !libtool staticlibs)
 source=("https://chromium.googlesource.com/webm/libvpx/+archive/v1.14.1.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('53775766e40a494021dfa3cff61f408f18d01fefc48012b54b1fd31c318f3eca')
 makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-openlibm')
 groups=('ps4-homebrew-dev')
 
