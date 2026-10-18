@@ -11,8 +11,8 @@ PKGS=(sdk openlibm zlib libcxx bzip2 dht enet expat faad2
       libtheora libutp libvorbis libyuv lz4 miniupnpc mpg123
       json-c libevent libjpeg-turbo libquickjs libvpx libwebp lua luajit
       openssl curl libssh libssh2 opus libsndfile sqlite tinyxml2 xz
-      libxml2 yaml-cpp zstd libarchive libzip mesa vulkan-headers'
-      SDL2 SDL2_ttf SDL2_net SDL2_mixer SDL2_image SDL2_gfx)
+      libxml2 yaml-cpp zstd libarchive libzip mesa vulkan-headers ffmpeg
+      SDL2 SDL2_ttf SDL2_net SDL2_mixer SDL2_image SDL2_gfx SDL2_kitchensink)
 
 sudo pacman --noconfirm --remove ps4-homebrew-dev
 
