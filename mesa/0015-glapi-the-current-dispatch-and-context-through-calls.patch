@@ -1,0 +1,79 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sat, 17 Oct 2026 21:14:06 +0000
+Subject: [PATCH 15/16] glapi: the current dispatch and context through calls
+ on the PS4
+
+On the PS4, as with Windows DLLs, one module cannot use the thread-local
+variables another exports, and libGLESv2's entry points and libEGL read the
+current dispatch table, which libgallium keeps in _mesa_glapi_tls_Dispatch.
+There, GET_DISPATCH() and GET_CURRENT_CONTEXT() call
+_mesa_glapi_get_dispatch() and _mesa_glapi_get_context(), which libgallium
+now exports, as Windows does.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017iduBr5J43VcTC99HLCEQm
+---
+ src/gallium/meson.build            | 9 +++++++++
+ src/gallium/targets/dri/dri.sym.in | 5 +++--
+ src/mesa/glapi/glapi/glapi.h       | 6 +++++-
+ 3 files changed, 17 insertions(+), 3 deletions(-)
+
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f5..5d42920 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -22,6 +22,15 @@ else
+   sym_config.set('va_driver_init', '')
+ endif
+ 
++# The PS4 cannot export thread-local variables from a module: there, the
++# current dispatch and context are read through _mesa_glapi_get_dispatch and
++# _mesa_glapi_get_context (glapi.h).
++if cc.get_define('__ORBIS__') != ''
++  sym_config.set('mesa_glapi_tls_exports', '')
++else
++  sym_config.set('mesa_glapi_tls_exports', '_mesa_glapi_tls_Context; _mesa_glapi_tls_Dispatch;')
++endif
++
+ inc_gallium_drivers = include_directories('drivers')
+ inc_gallium_winsys = include_directories('winsys')
+ inc_gallium_winsys_sw = include_directories('winsys/sw')
+diff --git a/src/gallium/targets/dri/dri.sym.in b/src/gallium/targets/dri/dri.sym.in
+index d987668..101922b 100644
+--- a/src/gallium/targets/dri/dri.sym.in
++++ b/src/gallium/targets/dri/dri.sym.in
+@@ -1,13 +1,14 @@
+ {
+ 	global:
+                 # shared-glapi exported from libgallium:
++                _mesa_glapi_get_context;
++                _mesa_glapi_get_dispatch;
+                 _mesa_glapi_get_dispatch_table_size;
+                 _mesa_glapi_get_proc_address;
+                 _mesa_glapi_get_proc_offset;
+                 _mesa_glapi_set_context;
+                 _mesa_glapi_set_dispatch;
+-                _mesa_glapi_tls_Context;
+-                _mesa_glapi_tls_Dispatch;
++                @mesa_glapi_tls_exports@
+ 
+ 		ddebug_screen_create;
+ 		noop_screen_create;
+diff --git a/src/mesa/glapi/glapi/glapi.h b/src/mesa/glapi/glapi/glapi.h
+index 14575cc..9a9f856 100644
+--- a/src/mesa/glapi/glapi/glapi.h
++++ b/src/mesa/glapi/glapi/glapi.h
+@@ -72,7 +72,11 @@ struct _glapi_table;
+ _GLAPI_EXPORT extern __THREAD_INITIAL_EXEC struct _glapi_table * _mesa_glapi_tls_Dispatch;
+ _GLAPI_EXPORT extern __THREAD_INITIAL_EXEC void * _mesa_glapi_tls_Context;
+ 
+-#if DETECT_OS_WINDOWS && !defined(MAPI_MODE_SHARED_GLAPI)
++/* The PS4's dynamic linker, like Windows DLLs, does not let one module use
++ * the thread-local variables of another (libGLESv2 and libEGL those of
++ * libgallium), so the current dispatch and context are read through calls.
++ */
++#if (DETECT_OS_WINDOWS && !defined(MAPI_MODE_SHARED_GLAPI)) || defined(__ORBIS__)
+ # define GET_DISPATCH() _mesa_glapi_get_dispatch()
+ # define GET_CURRENT_CONTEXT(C)  struct gl_context *C = (struct gl_context *) _mesa_glapi_get_context()
+ #else

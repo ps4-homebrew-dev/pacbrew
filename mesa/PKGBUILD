@@ -1,7 +1,7 @@
 pkgname=ps4-homebrew-mesa
 pkgver=26.2.0
-pkgrel=7
-pkgdesc="Open-source Vulkan driver for the PS4 (RADV, VK_KHR_display on VideoOut)"
+pkgrel=8
+pkgdesc="Open-source Vulkan and OpenGL drivers for the PS4 (RADV, VK_KHR_display on VideoOut; zink, EGL and OpenGL ES on it)"
 url="https://www.mesa3d.org/"
 arch=('any')
 license=("MIT AND BSD-3-Clause AND SGI-B-2.0")
@@ -22,7 +22,10 @@ source=("https://mesa.freedesktop.org/archive/mesa-${pkgver}.tar.xz"
 	"0010-radv-vulkan-util-RADV-is-the-PS4-s-libvulkan.so.1.patch"
 	"0011-radv-a-PS4-winsys-on-Gnm.patch"
 	"0012-wsi-VK_KHR_display-on-the-PS4-s-VideoOut.patch"
-	"0013-radv-no-CMASK-fast-clear-for-a-console-display-surfa.patch")
+	"0013-radv-no-CMASK-fast-clear-for-a-console-display-surfa.patch"
+	"0014-zink-present-to-a-VK_KHR_display-surface-and-link-RA.patch"
+	"0015-glapi-the-current-dispatch-and-context-through-calls.patch"
+	"0016-egl-a-videoout-platform-zink-on-the-PS4-s-display.patch")
 
 sha256sums=('efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef'
 	    'f15f5a369c9761119b7dabb387302962a3272cb7aad83a2f48bae9c537c312d0'
@@ -37,7 +40,10 @@ sha256sums=('efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef'
 	    '24e0cffe37631a5256e16930bf6efa307a7ba8d034889551b7efca2b909800ff'
 	    '96bd7e7c58162bec3f62840bf519f38259ec9104e9eb7c8244f1b11b5c3086dc'
 	    '64a754e9b9cbe2320bb85f40496c1473c4b80e797b2a66109df34324614211f1'
-	    '15344d5a206e566f98f683acc673122d16d9c98b2fc3099fbba7d91ebbed0506')
+	    '15344d5a206e566f98f683acc673122d16d9c98b2fc3099fbba7d91ebbed0506'
+	    '655a4e70876f84818d7257d83c3afcf333899189ef8065da9fba995039decce9'
+	    '1c067c05d4eed3e0bb03b8b8ecd4ba971e25bfbc2cbe26659f148f9a513fb877'
+	    '7a919c4c9187732c0ac0303dfdd079847008aad36c672bbe4dac2ffd7d674a93')
 
 export PS4_HOMEBREW_SDK="${PS4_HOMEBREW_SDK:-/opt/ps4-homebrew-sdk}"
 
@@ -61,7 +67,9 @@ build() {
     build_id=$(cat <(echo "${pkgver}") "${srcdir}"/[0-9][0-9][0-9][0-9]-*.patch \
 		   | sha1sum | cut -d' ' -f1)
 
-    # Vulkan only, presenting with VK_KHR_display on VideoOut.
+    # Vulkan (RADV), presenting with VK_KHR_display on VideoOut, and OpenGL
+    # (ES) through EGL on zink, which draws with that RADV and presents to
+    # the same display (the videoout platform).
     ${MESON} setup builddir \
 	     -Ddefault_library=shared \
 	     -Dbuildtype=debugoptimized \
@@ -70,14 +78,16 @@ build() {
 	     -Dradv-winsys=ps4 \
 	     -Dvulkan-drivers=amd \
 	     -Dvulkan-layers= \
-	     -Dgallium-drivers= \
-	     -Dplatforms= \
-	     -Degl=disabled \
-	     -Dopengl=false \
-	     -Dgles2=disabled \
+	     -Dgallium-drivers=zink \
+	     -Dplatforms=videoout \
+	     -Degl-native-platform=videoout \
+	     -Degl=enabled \
+	     -Dopengl=true \
+	     -Dgles2=enabled \
 	     -Dgles1=disabled \
 	     -Dglx=disabled \
 	     -Dgbm=disabled \
+	     -Dglvnd=disabled \
 	     -Dmesa-clc=auto \
 	     -Dllvm=disabled \
 	     -Dzstd=disabled \

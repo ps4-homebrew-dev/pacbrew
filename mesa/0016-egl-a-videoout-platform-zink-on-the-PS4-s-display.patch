@@ -1,0 +1,592 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sat, 17 Oct 2026 21:14:06 +0000
+Subject: [PATCH 16/16] egl: a videoout platform, zink on the PS4's display
+
+-Dplatforms=videoout is EGL on the PlayStation 4's display (VideoOut),
+through zink on RADV (-Dradv-winsys=ps4), which shows VideoOut with
+VK_KHR_display. It is the console build's native platform
+(-Degl-native-platform=videoout), and needs neither DRM nor a window
+system; with it, gallium builds the DRI frontend for zink alone, as on
+macOS.
+
+- eglGetDisplay(EGL_DEFAULT_DISPLAY) opens zink through kopper, with no
+  device node, on EGL's software device.
+- The display is the only window: any non-zero EGLNativeWindowType names
+  it, and window surfaces made from the same value share zink's
+  swapchain. A window surface is the size of the display's mode
+  (kopperQueryDisplayExtent), and kopper presents it to a display surface.
+- Pbuffers are zink's own images, as on the surfaceless platform.
+- Window configs are the formats VideoOut scans out, B8G8R8A8 and
+  B8G8R8X8, linear or sRGB; every pbuffer visual is a pbuffer config.
+- FIFO is the one present mode, so the swap interval is 0 or 1, and 0 is
+  shown as 1. EGL_EXT_buffer_age and EGL_EXT_swap_buffers_with_damage are
+  offered.
+
+The build: the DRI frontend's dri2.c, which holds EGL's image and fence
+entry points, is built for the platform as for macOS; System V shared
+memory is used only where its calls exist, which the PS4's libc lacks; and
+egl.pc and glesv2.pc hand the program RADV's system modules to link, as
+vulkan.pc does, so that its crt initializes them.
+
+A Linux build of the PS4 winsys's host model can build the platform too,
+and runs the whole path, EGL to the VideoOut WSI's stand-ins, on a PC.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_017iduBr5J43VcTC99HLCEQm
+---
+ meson.build                              |  31 +-
+ meson.options                            |   7 +-
+ src/egl/drivers/dri2/egl_dri2.c          |   5 +
+ src/egl/drivers/dri2/egl_dri2.h          |  11 +
+ src/egl/drivers/dri2/platform_videoout.c | 344 +++++++++++++++++++++++
+ src/egl/main/egldisplay.c                |   1 +
+ src/egl/main/egldisplay.h                |   1 +
+ src/egl/meson.build                      |   3 +
+ 8 files changed, 397 insertions(+), 6 deletions(-)
+ create mode 100644 src/egl/drivers/dri2/platform_videoout.c
+
+diff --git a/meson.build b/meson.build
+index 8885d8c..5b16cc1 100644
+--- a/meson.build
++++ b/meson.build
+@@ -371,7 +371,9 @@ with_vdrm = [
+ ].contains(true)
+ 
+ with_dri = false
+-if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin')))
++# The PS4's display (videoout) is reached by zink alone, through VK_KHR_display,
++# with no DRM device behind it.
++if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin' or get_option('platforms').contains('videoout'))))
+   _glx = get_option('glx')
+   _egl = get_option('egl')
+   if _glx == 'dri' or _egl.enabled() or (_glx == 'disabled' and _egl.allowed())
+@@ -497,6 +499,7 @@ with_platform_wayland = _platforms.contains('wayland')
+ with_platform_haiku = _platforms.contains('haiku')
+ with_platform_windows = _platforms.contains('windows')
+ with_platform_macos = _platforms.contains('macos')
++with_platform_videoout = _platforms.contains('videoout')
+ 
+ # RADV on the PlayStation 4: no DRM device, no libdrm, a winsys of its own
+ # (src/amd/vulkan/winsys/ps4). AMD_NO_DRM marks the code the Windows port
+@@ -521,6 +524,18 @@ ps4_sysmodule_libs = with_radv_ps4_console ? ['-lSceGnmDriver', '-lSceVideoOut']
+ # is libvulkan.so.1 there and exports the Vulkan API itself.
+ with_zink_link_radv = with_gallium_zink and with_radv_ps4_console
+ 
++# OpenGL on the PS4: zink on RADV, presenting through RADV's VK_KHR_display
++# (VideoOut). EGL's videoout platform hands zink a display surface; there is
++# no window system and no DRM device.
++if with_platform_videoout
++  if not with_gallium_zink
++    error('The videoout platform is drawn to by zink: add zink to -Dgallium-drivers')
++  endif
++  if not with_radv_ps4
++    error('The videoout platform presents through RADV\'s VideoOut WSI: -Dvulkan-drivers=amd -Dradv-winsys=ps4')
++  endif
++endif
++
+ with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
+ if with_gfxstream_emulated_android
+   # When building the android_stub with a non-Bionic sysroot/target, we to have
+@@ -608,7 +623,7 @@ if with_egl
+   endif
+ 
+   # All the other platforms can be detected and cannot reach the native platform code
+-  _undetectable_platforms = ['x11', 'haiku', 'android', 'surfaceless']
++  _undetectable_platforms = ['x11', 'haiku', 'android', 'surfaceless', 'videoout']
+ 
+   # Don't enforce the native platform if none of the undetectable platforms are enabled
+   _undetectable_platforms_enabled = []
+@@ -730,7 +745,9 @@ if with_vulkan_icd_dir == ''
+   with_vulkan_icd_dir = join_paths(get_option('datadir'), 'vulkan/icd.d')
+ endif
+ 
+-with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or with_dri_platform == 'apple' or  with_dri_platform == 'pseudo-drm')
++# EGL's image and fence entry points are in the DRI frontend's dri2.c, which
++# the videoout platform (zink on the PS4, without DRM) needs as macOS does.
++with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or with_dri_platform == 'apple' or  with_dri_platform == 'pseudo-drm' or with_platform_videoout)
+ 
+ if with_dri
+   if with_glx == 'disabled' and not with_egl and not with_gbm
+@@ -1647,7 +1664,8 @@ endif
+ foreach h : ['xlocale.h', 'linux/futex.h', 'endian.h', 'dlfcn.h', 'sys/shm.h',
+              'cet.h', 'pthread_np.h', 'poll.h', 'sys/inotify.h',
+              'linux/udmabuf.h']
+-  if cc.check_header(h)
++  # The PS4's libc has the System V shared memory header, but not the calls.
++  if cc.check_header(h) and (h != 'sys/shm.h' or cc.has_function('shmget', prefix : '#include <sys/shm.h>'))
+     pre_args += '-DHAVE_@0@'.format(h.to_upper().underscorify())
+   endif
+ endforeach
+@@ -2513,6 +2531,11 @@ endif
+ if dep_dl.found()
+   gl_priv_libs += '-ldl'
+ endif
++# EGL and GL reach the PS4's GPU through RADV, whose system modules the
++# program's crt initializes, as vulkan.pc has it link them.
++if with_platform_videoout
++  gl_priv_libs += ps4_sysmodule_libs
++endif
+ 
+ # FIXME: autotools lists this as incomplete
+ gbm_priv_libs = []
+diff --git a/meson.options b/meson.options
+index 9f84266..109c3de 100644
+--- a/meson.options
++++ b/meson.options
+@@ -13,9 +13,12 @@ option(
+   value : ['auto'],
+   choices : [
+     'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos',
++    'videoout',
+   ],
+   description : 'window systems to support. If this is set to `auto`, all ' +
+-                'platforms applicable will be enabled.'
++                'platforms applicable will be enabled. videoout is the ' +
++                'PlayStation 4\'s display, reached through VK_KHR_display ' +
++                '(-Dradv-winsys=ps4) by zink.'
+ )
+ 
+ option(
+@@ -23,7 +26,7 @@ option(
+   type : 'combo',
+   value : 'auto',
+   choices : [
+-    'auto', 'x11', 'haiku', 'android', 'surfaceless',
++    'auto', 'x11', 'haiku', 'android', 'surfaceless', 'videoout',
+   ],
+   description : 'the window system EGL assumes for EGL_DEFAULT_DISPLAY',
+ )
+diff --git a/src/egl/drivers/dri2/egl_dri2.c b/src/egl/drivers/dri2/egl_dri2.c
+index edee4ff..0e032cf 100644
+--- a/src/egl/drivers/dri2/egl_dri2.c
++++ b/src/egl/drivers/dri2/egl_dri2.c
+@@ -913,6 +913,9 @@ dri2_initialize(_EGLDisplay *disp)
+    case _EGL_PLATFORM_ANDROID:
+       ret = dri2_initialize_android(disp);
+       break;
++   case _EGL_PLATFORM_VIDEOOUT:
++      ret = dri2_initialize_videoout(disp);
++      break;
+    default:
+       UNREACHABLE("Callers ensure we cannot get here.");
+       return EGL_FALSE;
+@@ -1006,6 +1009,8 @@ dri2_display_destroy(_EGLDisplay *disp)
+       break;
+    case _EGL_PLATFORM_DEVICE:
+       break;
++   case _EGL_PLATFORM_VIDEOOUT:
++      break;
+    default:
+       UNREACHABLE("Platform teardown is not properly hooked.");
+       break;
+diff --git a/src/egl/drivers/dri2/egl_dri2.h b/src/egl/drivers/dri2/egl_dri2.h
+index aa5692a..14d3fc9 100644
+--- a/src/egl/drivers/dri2/egl_dri2.h
++++ b/src/egl/drivers/dri2/egl_dri2.h
+@@ -559,6 +559,17 @@ dri2_teardown_wayland(struct dri2_egl_display *dri2_dpy)
+ }
+ #endif
+ 
++#ifdef HAVE_VIDEOOUT_PLATFORM
++EGLBoolean
++dri2_initialize_videoout(_EGLDisplay *disp);
++#else
++static inline EGLBoolean
++dri2_initialize_videoout(_EGLDisplay *disp)
++{
++   return _eglError(EGL_NOT_INITIALIZED, "VideoOut platform not built");
++}
++#endif
++
+ #ifdef HAVE_ANDROID_PLATFORM
+ EGLBoolean
+ dri2_initialize_android(_EGLDisplay *disp);
+diff --git a/src/egl/drivers/dri2/platform_videoout.c b/src/egl/drivers/dri2/platform_videoout.c
+new file mode 100644
+index 0000000..dfbb368
+--- /dev/null
++++ b/src/egl/drivers/dri2/platform_videoout.c
+@@ -0,0 +1,344 @@
++/*
++ * Copyright © 2026 John Törnblom
++ * SPDX-License-Identifier: MIT
++ */
++
++/*
++ * EGL on the PlayStation 4's display (VideoOut).
++ *
++ * The console has no window system, no DRM device and no GPU driver Mesa's
++ * gallium drivers can talk to, but RADV runs there, and its VK_KHR_display
++ * shows VideoOut's one display (wsi_common_videoout.c). This platform is zink
++ * on that RADV, presenting through kopper to a display surface:
++ *
++ * - the display is EGL_DEFAULT_DISPLAY: this is the native platform of the
++ *   console build;
++ * - the display is the only window. Any non-zero EGLNativeWindowType names
++ *   it; window surfaces made from the same value share zink's swapchain, as
++ *   an X11 window's do. A window surface is the size of the display's mode,
++ *   and presents FIFO, with swap interval 1;
++ * - pbuffers are zink's own images, as on the surfaceless platform;
++ * - window configs are those VideoOut scans out, B8G8R8A8 (and its sRGB
++ *   view); every pbuffer visual is offered as a pbuffer.
++ */
++
++#include <assert.h>
++#include <stdint.h>
++#include <stdlib.h>
++#include <string.h>
++
++#include "pipe/p_screen.h"
++#include "util/format/u_formats.h"
++#include "util/u_debug.h"
++
++#include "egl_dri2.h"
++#include "eglglobals.h"
++#include "kopper_interface.h"
++#include "dri_screen.h"
++#include "dri_util.h"
++
++/* The display this platform shows: VK_KHR_display's first. */
++#define VIDEOOUT_DISPLAY_INDEX 0
++
++static_assert(sizeof(struct kopper_display_surface_create_info) <=
++                 sizeof(struct kopper_vk_surface_create_storage),
++              "kopper's storage holds a display surface");
++
++/* The formats VideoOut scans out, which window configs are made of. */
++static const enum pipe_format videoout_window_formats[] = {
++   PIPE_FORMAT_BGRA8888_UNORM,
++   PIPE_FORMAT_BGRX8888_UNORM,
++   PIPE_FORMAT_BGRA8888_SRGB,
++   PIPE_FORMAT_BGRX8888_SRGB,
++};
++
++static bool
++videoout_is_window_format(enum pipe_format format)
++{
++   for (unsigned i = 0; i < ARRAY_SIZE(videoout_window_formats); i++) {
++      if (videoout_window_formats[i] == format)
++         return true;
++   }
++   return false;
++}
++
++/* --- Kopper's loader ---------------------------------------------------- */
++
++static void
++videoout_kopper_set_surface_create_info(void *draw, struct kopper_loader_info *out)
++{
++   struct dri2_egl_surface *dri2_surf = draw;
++
++   /* A pbuffer is no window: kopper gives it zink's own images. */
++   if (dri2_surf->base.Type != EGL_WINDOW_BIT)
++      return;
++
++   struct kopper_display_surface_create_info *dsci =
++      (struct kopper_display_surface_create_info *)&out->bos;
++   memset(&out->bos, 0, sizeof(out->bos));
++   dsci->sType = VK_STRUCTURE_TYPE_DISPLAY_SURFACE_CREATE_INFO_KHR;
++   dsci->pNext = NULL;
++   dsci->window = (uintptr_t)dri2_surf->base.NativeSurface;
++   dsci->display_index = VIDEOOUT_DISPLAY_INDEX;
++
++   out->present_opaque = dri2_surf->base.PresentOpaque;
++}
++
++static void
++videoout_kopper_get_drawable_info(struct dri_drawable *draw, int *w, int *h,
++                                  void *loaderPrivate)
++{
++   struct dri2_egl_surface *dri2_surf = loaderPrivate;
++
++   *w = dri2_surf->base.Width;
++   *h = dri2_surf->base.Height;
++}
++
++static const __DRIkopperLoaderExtension videoout_kopper_loader_extension = {
++   .base = {__DRI_KOPPER_LOADER, 1},
++
++   .SetSurfaceCreateInfo = videoout_kopper_set_surface_create_info,
++   .GetDrawableInfo = videoout_kopper_get_drawable_info,
++};
++
++static const __DRIextension *videoout_loader_extensions[] = {
++   &videoout_kopper_loader_extension.base,
++   &image_lookup_extension.base,
++   NULL,
++};
++
++/* --- Surfaces ----------------------------------------------------------- */
++
++static _EGLSurface *
++videoout_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
++                        void *native_window, const EGLint *attrib_list)
++{
++   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
++   struct dri2_egl_config *dri2_conf = dri2_egl_config(conf);
++   const char *func = type == EGL_WINDOW_BIT ? "eglCreateWindowSurface"
++                                             : "eglCreatePbufferSurface";
++   struct dri2_egl_surface *dri2_surf;
++   const struct dri_config *config;
++
++   dri2_surf = calloc(1, sizeof *dri2_surf);
++   if (!dri2_surf) {
++      _eglError(EGL_BAD_ALLOC, func);
++      return NULL;
++   }
++
++   if (!dri2_init_surface(&dri2_surf->base, disp, type, conf, attrib_list,
++                          false, native_window))
++      goto cleanup_surface;
++
++   config = dri2_get_dri_config(dri2_conf, type, dri2_surf->base.GLColorspace);
++   if (!config) {
++      _eglError(EGL_BAD_MATCH, "Unsupported surfacetype/colorspace configuration");
++      goto cleanup_surface;
++   }
++
++   if (type == EGL_WINDOW_BIT) {
++      /* The window is the display, at the size of its mode. */
++      int width, height;
++      if (!kopperQueryDisplayExtent(dri2_dpy->dri_screen_render_gpu,
++                                    VIDEOOUT_DISPLAY_INDEX, &width, &height)) {
++         _eglError(EGL_BAD_NATIVE_WINDOW, "videoout: no display to show the window");
++         goto cleanup_surface;
++      }
++      dri2_surf->base.Width = width;
++      dri2_surf->base.Height = height;
++   } else {
++      dri2_surf->visual = dri2_image_format_for_pbuffer_config(dri2_dpy, config);
++      if (dri2_surf->visual == PIPE_FORMAT_NONE)
++         goto cleanup_surface;
++   }
++
++   if (!dri2_create_drawable(dri2_dpy, config, dri2_surf, dri2_surf))
++      goto cleanup_surface;
++
++   if (type == EGL_WINDOW_BIT) {
++      dri2_surf->base.SwapInterval = dri2_dpy->default_swap_interval;
++      kopperSetSwapInterval(dri2_surf->dri_drawable, dri2_dpy->default_swap_interval);
++   }
++
++   return &dri2_surf->base;
++
++cleanup_surface:
++   free(dri2_surf);
++   return NULL;
++}
++
++static _EGLSurface *
++videoout_create_window_surface(_EGLDisplay *disp, _EGLConfig *conf,
++                               void *native_window, const EGLint *attrib_list)
++{
++   return videoout_create_surface(disp, EGL_WINDOW_BIT, conf, native_window,
++                                  attrib_list);
++}
++
++static _EGLSurface *
++videoout_create_pbuffer_surface(_EGLDisplay *disp, _EGLConfig *conf,
++                                const EGLint *attrib_list)
++{
++   return videoout_create_surface(disp, EGL_PBUFFER_BIT, conf, NULL,
++                                  attrib_list);
++}
++
++static EGLBoolean
++videoout_destroy_surface(_EGLDisplay *disp, _EGLSurface *surf)
++{
++   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
++
++   driDestroyDrawable(dri2_surf->dri_drawable);
++
++   dri2_fini_surface(surf);
++   free(dri2_surf);
++   return EGL_TRUE;
++}
++
++static EGLBoolean
++videoout_swap_interval(_EGLDisplay *disp, _EGLSurface *surf, EGLint interval)
++{
++   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
++
++   kopperSetSwapInterval(dri2_surf->dri_drawable, interval);
++   return EGL_TRUE;
++}
++
++static EGLBoolean
++videoout_swap_buffers_with_damage(_EGLDisplay *disp, _EGLSurface *draw,
++                                  const EGLint *rects, EGLint n_rects)
++{
++   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(draw);
++
++   if (draw->Type != EGL_WINDOW_BIT)
++      return EGL_TRUE;
++
++   if (n_rects)
++      kopperSwapBuffersWithDamage(dri2_surf->dri_drawable,
++                                  __DRI2_FLUSH_CONTEXT | __DRI2_FLUSH_INVALIDATE_ANCILLARY,
++                                  n_rects, rects);
++   else
++      kopperSwapBuffers(dri2_surf->dri_drawable,
++                        __DRI2_FLUSH_CONTEXT | __DRI2_FLUSH_INVALIDATE_ANCILLARY);
++
++   kopperQuerySurfaceSize(dri2_surf->dri_drawable, &dri2_surf->base.Width,
++                          &dri2_surf->base.Height);
++   return EGL_TRUE;
++}
++
++static EGLBoolean
++videoout_swap_buffers(_EGLDisplay *disp, _EGLSurface *draw)
++{
++   return videoout_swap_buffers_with_damage(disp, draw, NULL, 0);
++}
++
++static EGLint
++videoout_query_buffer_age(_EGLDisplay *disp, _EGLSurface *surf)
++{
++   struct dri2_egl_surface *dri2_surf = dri2_egl_surface(surf);
++
++   return kopperQueryBufferAge(dri2_surf->dri_drawable);
++}
++
++static const struct dri2_egl_display_vtbl dri2_videoout_display_vtbl = {
++   .create_window_surface = videoout_create_window_surface,
++   .create_pbuffer_surface = videoout_create_pbuffer_surface,
++   .destroy_surface = videoout_destroy_surface,
++   .create_image = dri2_create_image_khr,
++   .swap_interval = videoout_swap_interval,
++   .swap_buffers = videoout_swap_buffers,
++   .swap_buffers_with_damage = videoout_swap_buffers_with_damage,
++   .query_buffer_age = videoout_query_buffer_age,
++   .get_dri_drawable = dri2_surface_get_dri_drawable,
++};
++
++/* --- The display -------------------------------------------------------- */
++
++static void
++videoout_add_configs(_EGLDisplay *disp)
++{
++   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
++   unsigned window_configs = 0;
++
++   /* Window configs first: a pbuffer config that matches one is the same
++    * config, which then serves both. */
++   for (unsigned pass = 0; pass < 2; pass++) {
++      for (unsigned i = 0; dri2_dpy->driver_configs[i] != NULL; i++) {
++         const struct gl_config *gl_config =
++            (const struct gl_config *)dri2_dpy->driver_configs[i];
++         const bool window = videoout_is_window_format(gl_config->color_format);
++
++         if (window != (pass == 0))
++            continue;
++
++         struct dri2_egl_config *dri2_conf =
++            dri2_add_config(disp, dri2_dpy->driver_configs[i],
++                            window ? EGL_WINDOW_BIT | EGL_PBUFFER_BIT : EGL_PBUFFER_BIT,
++                            NULL);
++         if (dri2_conf && window)
++            window_configs++;
++      }
++   }
++
++   if (!window_configs)
++      _eglLog(_EGL_WARNING, "videoout: no config the display can show");
++}
++
++EGLBoolean
++dri2_initialize_videoout(_EGLDisplay *disp)
++{
++   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
++   const char *err;
++
++   /* No device node: zink finds RADV through Vulkan. */
++   dri2_dpy->fd_render_gpu = -1;
++   dri2_dpy->fd_display_gpu = -1;
++
++   disp->Device = _eglFindDevice(-1, true);
++   if (!disp->Device) {
++      err = "videoout: no EGL device";
++      goto cleanup;
++   }
++
++   dri2_dpy->driver_name = strdup("zink");
++   if (!dri2_dpy->driver_name) {
++      err = "videoout: out of memory";
++      goto cleanup;
++   }
++
++   dri2_detect_swrast_kopper(disp);
++   if (!dri2_dpy->kopper) {
++      err = "videoout: the display is drawn to by zink through kopper";
++      goto cleanup;
++   }
++   dri2_dpy->loader_extensions = videoout_loader_extensions;
++
++   if (!dri2_create_screen(disp)) {
++      err = "videoout: failed to create the zink screen";
++      goto cleanup;
++   }
++
++   if (!dri2_dpy->dri_screen_render_gpu->base.screen->caps.graphics) {
++      err = "videoout: zink found no Vulkan device that draws";
++      goto cleanup;
++   }
++
++   dri2_setup_screen(disp);
++   /* FIFO is what VideoOut presents with: an interval of 0 is shown as 1. */
++   dri2_setup_swap_interval(disp, 1);
++
++   disp->Extensions.EXT_buffer_age = EGL_TRUE;
++   disp->Extensions.EXT_swap_buffers_with_damage = EGL_TRUE;
++
++   videoout_add_configs(disp);
++
++   /* Fill vtbl last to prevent accidentally calling virtual function during
++    * initialization.
++    */
++   dri2_dpy->vtbl = &dri2_videoout_display_vtbl;
++
++   return EGL_TRUE;
++
++cleanup:
++   return _eglError(EGL_NOT_INITIALIZED, err);
++}
+diff --git a/src/egl/main/egldisplay.c b/src/egl/main/egldisplay.c
+index 03fe8de..4aceef9 100644
+--- a/src/egl/main/egldisplay.c
++++ b/src/egl/main/egldisplay.c
+@@ -84,6 +84,7 @@ static const struct {
+    {_EGL_PLATFORM_SURFACELESS, "surfaceless"},
+    {_EGL_PLATFORM_DEVICE, "device"},
+    {_EGL_PLATFORM_WINDOWS, "windows"},
++   {_EGL_PLATFORM_VIDEOOUT, "videoout"},
+ };
+ 
+ /**
+diff --git a/src/egl/main/egldisplay.h b/src/egl/main/egldisplay.h
+index 6178140..5d027fe 100644
+--- a/src/egl/main/egldisplay.h
++++ b/src/egl/main/egldisplay.h
+@@ -55,6 +55,7 @@ enum _egl_platform_type {
+    _EGL_PLATFORM_SURFACELESS,
+    _EGL_PLATFORM_DEVICE,
+    _EGL_PLATFORM_WINDOWS,
++   _EGL_PLATFORM_VIDEOOUT,
+ 
+    _EGL_NUM_PLATFORMS,
+    _EGL_INVALID_PLATFORM = -1
+diff --git a/src/egl/meson.build b/src/egl/meson.build
+index 4e62ee4..fd4a1c4 100644
+--- a/src/egl/meson.build
++++ b/src/egl/meson.build
+@@ -133,6 +133,9 @@ if with_dri
+       ]
+     endif
+   endif
++  if with_platform_videoout
++    files_egl += files('drivers/dri2/platform_videoout.c')
++  endif
+   if with_platform_android
+     deps_for_egl += [dep_android, idep_u_gralloc]
+     files_egl += files('drivers/dri2/platform_android.c')
