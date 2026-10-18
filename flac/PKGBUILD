@@ -23,7 +23,7 @@ build() {
 
     ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
 		--enable-static --disable-shared \
-		--enable-cpplibs \
+		--enable-cpplibs --disable-avx \
 		--disable-thorough-tests --disable-ogg
 
     ${MAKE} -C src/libFLAC
