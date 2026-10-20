@@ -6,10 +6,8 @@ arch=('any')
 url='https://ffmpeg.org'
 license=('LGPL' 'GPL')
 options=(!strip !libtool staticlibs)
-source=("https://ffmpeg.org/releases/ffmpeg-$pkgver.tar.xz"
-	"ffplay-with-game-controller-input.diff")
-sha256sums=('SKIP'
-	    '30f3119ad501d4ca16f3f2b7a4a194a82f36aad506ba05227fcbb50145da2d53')
+source=("https://ffmpeg.org/releases/ffmpeg-$pkgver.tar.xz")
+sha256sums=('30f3119ad501d4ca16f3f2b7a4a194a82f36aad506ba05227fcbb50145da2d53')
 groups=('ps4-homebrew-dev')
 depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl' 'ps4-homebrew-freetype'
 	 'ps4-homebrew-libfribidi' 'ps4-homebrew-harfbuzz' 'ps4-homebrew-libass')
