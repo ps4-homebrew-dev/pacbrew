@@ -19,6 +19,9 @@ prepare() {
     # LuaJIT actually supports the ps4, but will disable ffi
     # and the JIT compiler. Build it as a regular FreeBSD target instead.
     sed -i 's|__ORBIS__|__JUNK__|g' src/lj_arch.h
+
+    # add missing transitive dependency to libunwind to luajit.pc
+    sed -i 's|-ldl|-ldl -lunwind|g' etc/luajit.pc
 }
 
 
