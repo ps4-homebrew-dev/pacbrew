@@ -1,0 +1,39 @@
+pkgname=ps4-homebrew-rmlui
+pkgver=6.2
+pkgrel=1
+pkgdesc='A HTML/CSS User Interface library'
+arch=('any')
+url='https://mikke89.github.io/RmlUiDoc'
+license=('MIT')
+source=("https://github.com/mikke89/RmlUi/archive/refs/tags/$pkgver.tar.gz")
+sha256sums=('814c3ff7b9666280338d8f0dda85979f5daf028d01c85fc8975431d1e2fd8e8b')
+options=(!strip libtool staticlibs)
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-luajit'
+	     'ps4-homebrew-freetype' 'ps4-homebrew-sdl2' 'ps4-homebrew-sdl2_image')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd RmlUi-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DRMLUI_LUA_BINDINGS=YES \
+	     -DRMLUI_LUA_BINDINGS_LIBRARY=luajit \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd RmlUi-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}
