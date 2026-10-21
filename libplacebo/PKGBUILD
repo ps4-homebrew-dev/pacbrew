@@ -1,0 +1,38 @@
+pkgname=ps4-homebrew-libplacebo
+pkgver=7.360.1
+pkgrel=1
+pkgdesc='Reusable library for GPU-accelerated video/image rendering primitives'
+url='https://github.com/haasn/libplacebo'
+arch=('any')
+license=('LGPL-2.1-or-later')
+options=(!strip !libtool staticlibs)
+source=(https://code.videolan.org/videolan/libplacebo/-/archive/v${pkgver}/libplacebo-v${pkgver}.tar.gz)
+sha256sums=('14c0a99f4b01557ec9826ce6b1d52f6de21be274ba03fd5aab7307f18766dc39')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-mesa'
+	    'ps4-homebrew-sdl2' 'ps4-homebrew-sdl2_image')
+#TODO: complete makedepends
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libplacebo-v${pkgver}
+
+    ${MESON} setup builddir \
+	     -Ddemos=false
+    ${MESON} compile -C builddir
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd libplacebo-v${pkgver}
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
+    echo "Libs.private: -lc++" >> \
+	 "${pkgdir}/${SYSROOT}/${PREFIX}/libdata/pkgconfig/libplacebo.pc"
+}
