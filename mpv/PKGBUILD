@@ -1,0 +1,40 @@
+pkgname=ps4-homebrew-mpv
+pkgver=0.41.0
+pkgrel=1
+pkgdesc='a free, open source, and cross-platform media player'
+url='https://mpv.io/'
+arch=('any')
+license=('GPL-2.0-or-later AND LGPL-2.1-or-later')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/mpv-player/mpv/archive/refs/tags/v$pkgver.tar.gz")
+sha256sums=('ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-mesa'
+	    'ps4-homebrew-sdl2' 'ps4-homebrew-sdl2_image' 'ps4-homebrew-ffmpeg')
+#TODO: complete makedepends
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd mpv-${pkgver}
+
+    ${MESON} setup builddir \
+	     -Dlibmpv=true \
+	     -Dsdl2-audio=enabled \
+	     -Dsdl2-video=enabled \
+	     -Dsdl2-gamepad=enabled
+    ${MESON} compile -C builddir
+}
+
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd mpv-${pkgver}
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
+}
