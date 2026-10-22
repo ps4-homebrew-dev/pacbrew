@@ -6,8 +6,8 @@ arch=('any')
 url='https://ffmpeg.org'
 license=('LGPL' 'GPL')
 options=(!strip !libtool staticlibs)
-source=("https://ffmpeg.org/releases/ffmpeg-$pkgver.tar.xz")
-sha256sums=('30f3119ad501d4ca16f3f2b7a4a194a82f36aad506ba05227fcbb50145da2d53')
+source=("https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$pkgver.tar.gz")
+sha256sums=('8dab1da0c7ebccb2dce99265901f22ac40f8e0fbbe4a89a368d7645f2e79caa0')
 groups=('ps4-homebrew-dev')
 depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl' 'ps4-homebrew-freetype'
 	 'ps4-homebrew-libfribidi' 'ps4-homebrew-harfbuzz' 'ps4-homebrew-libass')
@@ -21,7 +21,7 @@ prepare() {
 
 build() {
     source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
-    cd ffmpeg-$pkgver
+    cd FFmpeg-n$pkgver
 
     ./configure \
 	--prefix="${PREFIX}" --enable-cross-compile \
@@ -40,7 +40,7 @@ build() {
 
 package() {
     source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
-    cd ffmpeg-$pkgver
+    cd FFmpeg-n$pkgver
 
     export DESTDIR="${pkgdir}/${SYSROOT}"
     ${MAKE} install
