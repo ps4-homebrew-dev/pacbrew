@@ -1,5 +1,5 @@
 pkgname=ps4-homebrew-ffmpeg
-pkgver=7.0.1
+pkgver=8.1.3
 pkgrel=1
 pkgdesc='Complete solution to record, convert and stream audio and video'
 arch=('any')
@@ -7,7 +7,7 @@ url='https://ffmpeg.org'
 license=('LGPL' 'GPL')
 options=(!strip !libtool staticlibs)
 source=("https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$pkgver.tar.gz")
-sha256sums=('8dab1da0c7ebccb2dce99265901f22ac40f8e0fbbe4a89a368d7645f2e79caa0')
+sha256sums=('SKIP')
 groups=('ps4-homebrew-dev')
 depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl' 'ps4-homebrew-freetype'
 	 'ps4-homebrew-libfribidi' 'ps4-homebrew-harfbuzz' 'ps4-homebrew-libass')
@@ -31,7 +31,7 @@ build() {
 	--enable-openssl --enable-version3 \
 	--enable-libfreetype --enable-libfribidi --enable-libharfbuzz \
 	--enable-gpl \
-	--disable-debug --disable-doc \
+	--disable-debug --disable-doc --disable-programs \
 	--enable-libass \
 	--cc="${CC}" --cxx="${CXX}" --nm="${NM}" --strip="${STRIP}" \
 	--ar="${AR}" --ranlib="${RANLIB}" --pkg-config="${PKG_CONFIG}"
