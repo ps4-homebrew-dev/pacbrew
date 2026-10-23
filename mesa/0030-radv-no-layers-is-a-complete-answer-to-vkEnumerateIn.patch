@@ -1,0 +1,46 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Fri, 23 Oct 2026 15:44:50 +0000
+Subject: [PATCH 30/30] radv: no layers is a complete answer to
+ vkEnumerateInstanceLayerProperties
+
+With an array, vkEnumerateInstanceLayerProperties returned
+VK_ERROR_LAYER_NOT_PRESENT, though there being no layers is answered by
+a count of 0 and VK_SUCCESS whatever was passed. The Khronos loader
+answers the call itself, so this was never seen; but RADV is the PS4's
+libvulkan.so.1, and there zink logged "ZINK: vkEnumerateInstanceLayerProperties
+failed" on every start (it allocates an array for the 0 layers counted),
+and a program that takes the error as fatal would not start.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Bb93U7uY5qVNuEcHDggEfE
+---
+ src/amd/vulkan/radv_instance.c | 15 ++++++++-------
+ 1 file changed, 8 insertions(+), 7 deletions(-)
+
+diff --git a/src/amd/vulkan/radv_instance.c b/src/amd/vulkan/radv_instance.c
+index eca90d3..8ad2aa5 100644
+--- a/src/amd/vulkan/radv_instance.c
++++ b/src/amd/vulkan/radv_instance.c
+@@ -435,13 +435,14 @@ radv_EnumerateInstanceVersion(uint32_t *pApiVersion)
+ VKAPI_ATTR VkResult VKAPI_CALL
+ radv_EnumerateInstanceLayerProperties(uint32_t *pPropertyCount, VkLayerProperties *pProperties)
+ {
+-   if (pProperties == NULL) {
+-      *pPropertyCount = 0;
+-      return VK_SUCCESS;
+-   }
+-
+-   /* None supported at this time */
+-   return vk_error(NULL, VK_ERROR_LAYER_NOT_PRESENT);
++   /* There are no layers: whether or not an array was passed, none is written
++    * and the count is 0, which is a complete answer (VK_SUCCESS). The Khronos
++    * loader answers this itself, but where RADV is libvulkan.so.1 (the PS4)
++    * its answer is the program's.
++    */
++   (void)pProperties;
++   *pPropertyCount = 0;
++   return VK_SUCCESS;
+ }
+ 
+ VKAPI_ATTR PFN_vkVoidFunction VKAPI_CALL

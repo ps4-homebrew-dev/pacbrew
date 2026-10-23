@@ -1,7 +1,7 @@
 pkgname=ps4-homebrew-mesa
 pkgver=26.2.0
-pkgrel=9
-pkgdesc="Open-source Vulkan and OpenGL drivers for the PS4 (RADV, VK_KHR_display on VideoOut; zink, EGL and OpenGL ES on it)"
+pkgrel=10
+pkgdesc="Open-source Vulkan and OpenGL drivers for the PS4 (RADV, VK_KHR_display on VideoOut; zink, EGL, OpenGL and OpenGL ES on it)"
 url="https://www.mesa3d.org/"
 arch=('any')
 license=("MIT AND BSD-3-Clause AND SGI-B-2.0")
@@ -37,7 +37,9 @@ source=("https://mesa.freedesktop.org/archive/mesa-${pkgver}.tar.xz"
 	"0025-radv-ps4-tessellation-s-rings-where-the-VGT-uses-the.patch"
 	"0026-ac-write-PA_CL_NANINF_CNTL-on-GFX6-9-whatever-CLEAR_.patch"
 	"0027-zink-destroy-the-resource-object-s-copy-lock.patch"
-	"0028-radv-no-CMASK-where-the-CB-wedges-on-it.patch")
+	"0028-radv-no-CMASK-where-the-CB-wedges-on-it.patch"
+	"0029-mesa-a-libGL-without-GLX-for-the-videoout-platform.patch"
+	"0030-radv-no-layers-is-a-complete-answer-to-vkEnumerateIn.patch")
 
 sha256sums=('efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef'
 	    'f15f5a369c9761119b7dabb387302962a3272cb7aad83a2f48bae9c537c312d0'
@@ -67,7 +69,9 @@ sha256sums=('efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef'
 	    '6e0539d39342e99f6df6d0a2dd17feb27527a69ea049dd1de19fac6126de9ee1'
 	    '5391bdd870edf891c23381761e3a244a493f5341794438fc011cfc61acf7d979'
 	    'c90370fffbb9f1364f6e9a8ec8a0c48d526041b8c1df240ce7349c22a7a57d7d'
-	    'a6f5ec72ce81690017bbdcb28bcf5147144d286975e301f7848b987f45c9a54a')
+	    'a6f5ec72ce81690017bbdcb28bcf5147144d286975e301f7848b987f45c9a54a'
+	    '42ae79f59771ca40f6d2ea59f2ce0caa29e4e4b4f057d01603ea21a9568b6f59'
+	    '5a3930ce8b18dc11ee9de6726a493e71a74c63c7d4d9b469cc95d68b3decfd76')
 
 export PS4_HOMEBREW_SDK="${PS4_HOMEBREW_SDK:-/opt/ps4-homebrew-sdk}"
 
