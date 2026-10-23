@@ -1,0 +1,147 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 21 Oct 2026 20:38:55 +0000
+Subject: [PATCH 24/28] radv/ps4: the legacy GS rings at the size the VGT wraps
+ them
+
+On the PS4 the VGT's ES->GS and GS->VS ring sizes are the system's:
+libSceGnmDriver sets them with sceGnmSetGsRingSizes, which takes 4 to
+8 MiB (shadPS4 documents the validation), and the VGT_ESGS_RING_SIZE and
+VGT_GSVS_RING_SIZE that RADV writes in its preamble do not reach it --
+read back through COPY_DATA they are 0 before and after RADV writes them.
+The VGT then hands out ring offsets up to a size larger than the rings
+RADV allocated, and two ports found what follows:
+
+- the DolphinPS4/Crema port (Crema v01.91): the GS wrote 2 MiB into a
+  1.25 MiB GS->VS ring, a GPU page fault at the ring's base + 2 MiB
+  (Donkey Kong Country: Tropical Freeze), and xemu-ps4, whose every
+  point goes through a GS;
+- Crema v03.14: what the GS wrote past RADV's size the copy shader read
+  outside its descriptor's bounds, as zeros, and those primitives
+  vanished (Super Mario Maker's tiles), fixed with rings of 8 MiB;
+- the orbis-ports mesa-ps4 port: "this hardware writes past the ring
+  size it was told".
+
+The platform now sets both sizes to 8 MiB, the largest the system takes,
+when it starts, and radeon_info.fixed_gs_ring_size has RADV allocate the
+legacy GS rings, and describe them to the shaders, at that size whenever
+a submission needs them. If the call were to fail, no size the system
+holds is larger.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Bb93U7uY5qVNuEcHDggEfE
+---
+ include/ps4_sce.h                             |  4 ++++
+ src/amd/common/ac_gpu_info.h                  |  7 +++++++
+ src/amd/vulkan/radv_queue.c                   | 10 ++++++++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.c | 11 +++++++++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.h |  5 +++++
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c   |  3 +++
+ 6 files changed, 40 insertions(+)
+
+diff --git a/include/ps4_sce.h b/include/ps4_sce.h
+index abb7bfb..4a559ff 100644
+--- a/include/ps4_sce.h
++++ b/include/ps4_sce.h
+@@ -78,6 +78,10 @@ int32_t sceGnmSubmitCommandBuffers(uint32_t count, void *dcb_addresses[], uint32
+ /* Tells the system a frame's submissions are done; a title that submits must
+  * call it regularly. */
+ int32_t sceGnmSubmitDone(void);
++/* Sets the sizes, in bytes, at which the VGT wraps the ES->GS and GS->VS
++ * rings: 4 to 8 MiB in 1 MiB steps. The registers are the system's; a write
++ * to them in a command buffer does not reach the VGT. */
++int32_t sceGnmSetGsRingSizes(uint32_t esgs_ring_bytes, uint32_t gsvs_ring_bytes);
+ 
+ /* ---------------------------------------------------------- libSceVideoOut */
+ 
+diff --git a/src/amd/common/ac_gpu_info.h b/src/amd/common/ac_gpu_info.h
+index c404c88..14136e0 100644
+--- a/src/amd/common/ac_gpu_info.h
++++ b/src/amd/common/ac_gpu_info.h
+@@ -480,6 +480,13 @@ struct radeon_info {
+    uint32_t pa_sc_raster_config_1;
+    uint32_t se_tile_repeat;
+ 
++   /* GFX6-8: where the VGT_ESGS_RING_SIZE and VGT_GSVS_RING_SIZE the VGT uses
++    * are the system's rather than the driver's (the PS4), the size in bytes
++    * both are set to. The legacy GS rings must then be at least that large,
++    * and their descriptors must cover it. 0 where the driver sets them.
++    */
++   uint32_t fixed_gs_ring_size;
++
+    struct {
+       uint32_t shadow_size;
+       uint32_t shadow_alignment;
+diff --git a/src/amd/vulkan/radv_queue.c b/src/amd/vulkan/radv_queue.c
+index 93f71ec..774daf6 100644
+--- a/src/amd/vulkan/radv_queue.c
++++ b/src/amd/vulkan/radv_queue.c
+@@ -1241,6 +1241,16 @@ radv_update_preambles(struct radv_queue_state *queue, struct radv_device *device
+       *has_follower |= !!cmd_buffer->gang.cs;
+    }
+ 
++   /* Where the VGT wraps the GS rings at sizes of the system's, the shaders
++    * write and read them up to that size, whatever RADV programs: the rings
++    * and their descriptors are that large. */
++   if (pdev->info.fixed_gs_ring_size) {
++      if (needs.esgs_ring_size)
++         needs.esgs_ring_size = pdev->info.fixed_gs_ring_size;
++      if (needs.gsvs_ring_size)
++         needs.gsvs_ring_size = pdev->info.fixed_gs_ring_size;
++   }
++
+    /* Sanitize scratch size information. */
+    needs.scratch_waves =
+       needs.scratch_size_per_wave ? MIN2(needs.scratch_waves, UINT32_MAX / needs.scratch_size_per_wave) : 0;
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+index 0e3b0e0..1c1af89 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+@@ -220,6 +220,17 @@ radv_ps4_platform_once(void)
+    radv_ps4_window.base = window;
+    radv_ps4_window.granules = (uint32_t)(bytes / RADV_PS4_GRANULE_BYTES);
+    radv_ps4_neo = sceKernelIsNeoMode() > 0;
++
++   /* The VGT's GS ring sizes are the system's: RADV's VGT_*_RING_SIZE writes
++    * do not reach it, and the GS wrote past the rings RADV sized (a GPU page
++    * fault at a GS->VS ring's base + 2 MiB in the DolphinPS4/Crema port, and
++    * GS output read back as zeros past the descriptors' bounds). Both are set
++    * to the largest size the system takes, which RADV then gives the rings
++    * (radeon_info.fixed_gs_ring_size). Should the call fail, no size the
++    * system holds is larger. */
++   const int gs_rings = sceGnmSetGsRingSizes(RADV_PS4_GS_RING_BYTES, RADV_PS4_GS_RING_BYTES);
++   if (gs_rings)
++      fprintf(stderr, "radv/ps4: sceGnmSetGsRingSizes failed: 0x%08x\n", (unsigned)gs_rings);
+    return true;
+ }
+ 
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
+index 3fc49ac..ca781db 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.h
+@@ -45,6 +45,11 @@
+ /* The most bytes one DCB may hold (Gnm's indirect buffer limit). */
+ #define RADV_PS4_DCB_MAX_BYTES UINT32_C(0x3ffffc)
+ 
++/* The size at which the VGT wraps the ES->GS and GS->VS rings: the system
++ * holds VGT_ESGS_RING_SIZE and VGT_GSVS_RING_SIZE, and the platform sets both
++ * to the largest size it takes (sceGnmSetGsRingSizes, 4 to 8 MiB). */
++#define RADV_PS4_GS_RING_BYTES (UINT32_C(8) << 20)
++
+ enum radv_ps4_memory_type {
+    /* CPU write-combined: what the GPU reads fastest, and what the CPU should
+     * only write. */
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index 1035952..b0dbffc 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -351,6 +351,9 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+     * World skinning; 97 dEQP-VK vertex_input cases in the orbis-ports
+     * mesa-ps4 port). */
+    info->compiler_info.has_unaligned_typed_vtx_fetch = false;
++   /* The VGT wraps the GS rings at the sizes the platform gave the system
++    * (sceGnmSetGsRingSizes). */
++   info->fixed_gs_ring_size = RADV_PS4_GS_RING_BYTES;
+ 
+    /* What the platform, not the chip, rules out. */
+    /* Nothing RADV records runs as an INDIRECT_BUFFER, so the command buffers

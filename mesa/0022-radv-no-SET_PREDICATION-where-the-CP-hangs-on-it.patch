@@ -1,0 +1,134 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 21 Oct 2026 20:36:42 +0000
+Subject: [PATCH 22/28] radv: no SET_PREDICATION where the CP hangs on it
+
+The PS4's graphics CP stops at a SET_PREDICATION packet, and three ports
+found it independently: DolphinPS4 (v02.08, "RADV without
+SET_PREDICATION, the PS4 CP hangs on it": Dolphin's first frame stopped
+at the first one), Crema, and the orbis-ports mesa-ps4 port, whose world
+load wedged at 42% of a 197000-dword submission, reproducibly, on the
+predicated fast-clear eliminate.
+
+RADV predicates the fast-clear eliminate of a CMASK fast-cleared image
+on GFX6-8 (BOOL64 on the image's FCE predicate), and implements
+VK_EXT_conditional_rendering with it.
+
+radeon_info.has_set_predication says whether the CP runs the packet: set
+for amdgpu, cleared by the PS4 winsys. Without it the eliminate runs
+unpredicated -- only slower, it is a no-op where nothing was fast
+cleared -- and VK_EXT_conditional_rendering is not offered (zink then
+evaluates GL's conditional rendering itself).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Bb93U7uY5qVNuEcHDggEfE
+---
+ src/amd/common/ac_gpu_info.c                | 2 ++
+ src/amd/common/ac_gpu_info.h                | 3 +++
+ src/amd/vulkan/meta/radv_meta_fast_clear.c  | 4 ++++
+ src/amd/vulkan/radv_cmd_buffer.c            | 6 ++++++
+ src/amd/vulkan/radv_physical_device.c       | 4 ++--
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c | 2 ++
+ 6 files changed, 19 insertions(+), 2 deletions(-)
+
+diff --git a/src/amd/common/ac_gpu_info.c b/src/amd/common/ac_gpu_info.c
+index c416a63..bf7369d 100644
+--- a/src/amd/common/ac_gpu_info.c
++++ b/src/amd/common/ac_gpu_info.c
+@@ -1065,6 +1065,7 @@ void ac_fill_feature_info(struct radeon_info *info, const struct drm_amdgpu_info
+    info->has_userptr = !info->is_virtio;
+    info->has_gpu_written_ibs = true;
+    info->has_replayable_va = true;
++   info->has_set_predication = true;
+    info->has_syncobj = true;
+    info->has_fence_to_handle = true;
+ 
+@@ -2064,6 +2065,7 @@ void ac_print_gpu_info(FILE *f, const struct radeon_info *info, int fd)
+    fprintf(f, "    has_userptr = %i\n", info->has_userptr);
+    fprintf(f, "    has_gpu_written_ibs = %i\n", info->has_gpu_written_ibs);
+    fprintf(f, "    has_replayable_va = %i\n", info->has_replayable_va);
++   fprintf(f, "    has_set_predication = %i\n", info->has_set_predication);
+    fprintf(f, "    has_timeline_syncobj = %u\n", info->has_timeline_syncobj);
+    fprintf(f, "    has_vm_always_valid = %u\n", info->has_vm_always_valid);
+    fprintf(f, "    has_eqaa_surface_allocator = %u\n", info->has_eqaa_surface_allocator);
+diff --git a/src/amd/common/ac_gpu_info.h b/src/amd/common/ac_gpu_info.h
+index 0efe68f..0994ef4 100644
+--- a/src/amd/common/ac_gpu_info.h
++++ b/src/amd/common/ac_gpu_info.h
+@@ -383,6 +383,9 @@ struct radeon_info {
+     * was given (RADEON_FLAG_REPLAYABLE with a replay address): every capture
+     * and replay feature needs it. */
+    bool has_replayable_va;
++   /* Whether the graphics CP runs SET_PREDICATION: conditional rendering and
++    * the predicated fast-clear eliminate need it. The PS4's hangs on it. */
++   bool has_set_predication;
+    bool has_syncobj;
+    bool has_timeline_syncobj;
+    bool has_fence_to_handle;
+diff --git a/src/amd/vulkan/meta/radv_meta_fast_clear.c b/src/amd/vulkan/meta/radv_meta_fast_clear.c
+index 4b6c22b..d190067 100644
+--- a/src/amd/vulkan/meta/radv_meta_fast_clear.c
++++ b/src/amd/vulkan/meta/radv_meta_fast_clear.c
+@@ -376,6 +376,10 @@ radv_process_color_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *
+       pred_offset = 0;
+    }
+ 
++   /* Without SET_PREDICATION the pass always runs, which is only slower. */
++   if (!pdev->info.has_set_predication)
++      pred_offset = 0;
++
+    if (pred_offset) {
+       pred_offset += 8 * subresourceRange->baseMipLevel;
+ 
+diff --git a/src/amd/vulkan/radv_cmd_buffer.c b/src/amd/vulkan/radv_cmd_buffer.c
+index 968c9ad..5b4dabe 100644
+--- a/src/amd/vulkan/radv_cmd_buffer.c
++++ b/src/amd/vulkan/radv_cmd_buffer.c
+@@ -16104,6 +16104,12 @@ radv_emit_set_predication_state(struct radv_cmd_buffer *cmd_buffer, bool draw_vi
+    struct radv_cmd_stream *cs = cmd_buffer->cs;
+    uint32_t op = 0;
+ 
++   /* Nothing predicates where the CP has no SET_PREDICATION: conditional
++    * rendering is not offered and meta passes run unpredicated. */
++   assert(pdev->info.has_set_predication);
++   if (!pdev->info.has_set_predication)
++      return;
++
+    radeon_check_space(device->ws, cs->b, 4);
+ 
+    if (va) {
+diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
+index 7aef92c..6928b31 100644
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -851,7 +851,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .EXT_buffer_device_address = true,
+       .EXT_calibrated_timestamps = radv_calibrated_timestamps_enabled(pdev),
+       .EXT_color_write_enable = true,
+-      .EXT_conditional_rendering = true,
++      .EXT_conditional_rendering = pdev->info.has_set_predication,
+       .EXT_conservative_rasterization = pdev->info.gfx_level >= GFX9,
+       .EXT_custom_border_color = true,
+       .EXT_custom_resolve = true,
+@@ -1176,7 +1176,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+       .pushDescriptor = true,
+ 
+       /* VK_EXT_conditional_rendering */
+-      .conditionalRendering = true,
++      .conditionalRendering = pdev->info.has_set_predication,
+       .inheritedConditionalRendering = false,
+ 
+       /* VK_KHR_vertex_attribute_divisor */
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index d4941ba..a40e529 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -356,6 +356,8 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+    /* Nothing RADV records runs as an INDIRECT_BUFFER, so the command buffers
+     * device-generated commands write cannot run. */
+    info->has_gpu_written_ibs = false;
++   /* The CP firmware hangs on SET_PREDICATION. */
++   info->has_set_predication = false;
+    /* One pool of memory the CPU and the GPU share, which RADV presents as an
+     * integrated GPU's. */
+    info->has_dedicated_vram = false;

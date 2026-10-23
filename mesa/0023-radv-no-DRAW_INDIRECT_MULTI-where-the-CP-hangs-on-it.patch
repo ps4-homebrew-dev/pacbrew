@@ -1,0 +1,157 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 21 Oct 2026 20:37:46 +0000
+Subject: [PATCH 23/28] radv: no DRAW_INDIRECT_MULTI where the CP hangs on it
+
+The PS4's graphics CP wedges on DRAW_INDIRECT_MULTI and
+DRAW_INDEX_INDIRECT_MULTI: the orbis-ports mesa-ps4 port measured it in
+two runs, where a dEQP session without the packet completed. RADV uses
+it for every indirect draw of more than one record, with a count
+buffer, or with the draw index used.
+
+radeon_info.has_draw_indirect_multi says whether the CP runs it: set for
+amdgpu, cleared by the PS4 winsys. Without it, an indirect draw of N
+records is N DRAW_(INDEX_)INDIRECT packets, each at its record's offset,
+with the draw index written to its SGPR before it. A count read from GPU
+memory cannot be honoured that way, so drawIndirectCount,
+VK_KHR_draw_indirect_count and VK_AMD_draw_indirect_count are not
+offered there (zink then offers no GL_ARB_indirect_parameters, which GL 4.6
+needs).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Bb93U7uY5qVNuEcHDggEfE
+---
+ src/amd/common/ac_gpu_info.c                |  2 ++
+ src/amd/common/ac_gpu_info.h                |  4 +++
+ src/amd/vulkan/radv_cmd_buffer.c            | 27 +++++++++++++++++++++
+ src/amd/vulkan/radv_physical_device.c       |  6 ++---
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c |  4 ++-
+ 5 files changed, 39 insertions(+), 4 deletions(-)
+
+diff --git a/src/amd/common/ac_gpu_info.c b/src/amd/common/ac_gpu_info.c
+index bf7369d..522c864 100644
+--- a/src/amd/common/ac_gpu_info.c
++++ b/src/amd/common/ac_gpu_info.c
+@@ -1066,6 +1066,7 @@ void ac_fill_feature_info(struct radeon_info *info, const struct drm_amdgpu_info
+    info->has_gpu_written_ibs = true;
+    info->has_replayable_va = true;
+    info->has_set_predication = true;
++   info->has_draw_indirect_multi = true;
+    info->has_syncobj = true;
+    info->has_fence_to_handle = true;
+ 
+@@ -2066,6 +2067,7 @@ void ac_print_gpu_info(FILE *f, const struct radeon_info *info, int fd)
+    fprintf(f, "    has_gpu_written_ibs = %i\n", info->has_gpu_written_ibs);
+    fprintf(f, "    has_replayable_va = %i\n", info->has_replayable_va);
+    fprintf(f, "    has_set_predication = %i\n", info->has_set_predication);
++   fprintf(f, "    has_draw_indirect_multi = %i\n", info->has_draw_indirect_multi);
+    fprintf(f, "    has_timeline_syncobj = %u\n", info->has_timeline_syncobj);
+    fprintf(f, "    has_vm_always_valid = %u\n", info->has_vm_always_valid);
+    fprintf(f, "    has_eqaa_surface_allocator = %u\n", info->has_eqaa_surface_allocator);
+diff --git a/src/amd/common/ac_gpu_info.h b/src/amd/common/ac_gpu_info.h
+index 0994ef4..c404c88 100644
+--- a/src/amd/common/ac_gpu_info.h
++++ b/src/amd/common/ac_gpu_info.h
+@@ -386,6 +386,10 @@ struct radeon_info {
+    /* Whether the graphics CP runs SET_PREDICATION: conditional rendering and
+     * the predicated fast-clear eliminate need it. The PS4's hangs on it. */
+    bool has_set_predication;
++   /* Whether the graphics CP runs DRAW_(INDEX_)INDIRECT_MULTI: several
++    * indirect draws, or a count read from memory, in one packet. The PS4's
++    * hangs on it. */
++   bool has_draw_indirect_multi;
+    bool has_syncobj;
+    bool has_timeline_syncobj;
+    bool has_fence_to_handle;
+diff --git a/src/amd/vulkan/radv_cmd_buffer.c b/src/amd/vulkan/radv_cmd_buffer.c
+index 5b4dabe..6d00356 100644
+--- a/src/amd/vulkan/radv_cmd_buffer.c
++++ b/src/amd/vulkan/radv_cmd_buffer.c
+@@ -11276,6 +11276,7 @@ radv_cs_emit_indirect_draw_packet(struct radv_cmd_buffer *cmd_buffer, bool index
+                                   uint64_t count_va, uint32_t stride, bool use_multi)
+ {
+    const struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
++   const struct radv_physical_device *pdev = radv_device_physical(device);
+    struct radv_cmd_stream *cs = cmd_buffer->cs;
+    const unsigned di_src_sel = indexed ? V_0287F0_DI_SRC_SEL_DMA : V_0287F0_DI_SRC_SEL_AUTO_INDEX;
+    bool draw_id_enable = cmd_buffer->state.uses_drawid;
+@@ -11293,6 +11294,32 @@ radv_cs_emit_indirect_draw_packet(struct radv_cmd_buffer *cmd_buffer, bool index
+    if (draw_id_enable)
+       draw_id_reg = ((base_reg + 4) - SI_SH_REG_OFFSET) >> 2;
+ 
++   if (use_multi && !pdev->info.has_draw_indirect_multi) {
++      /* One DRAW_INDIRECT per draw, each at its record's offset, the draw
++       * index written to its SGPR before it. A count buffer needs the MULTI
++       * packet, and drawIndirectCount is not offered without it. */
++      assert(!count_va);
++      const uint32_t draw_id_sh_reg = base_reg + 4;
++      const unsigned dw_per_draw = (draw_id_enable ? 3 : 0) + 5;
++      for (uint32_t first = 0; first < draw_count; first += 1024) {
++         const uint32_t batch = MIN2(draw_count - first, 1024);
++         radeon_check_space(device->ws, cs->b, batch * dw_per_draw);
++         radeon_begin(cs);
++         for (uint32_t i = first; i < first + batch; i++) {
++            if (draw_id_enable)
++               radeon_set_sh_reg(draw_id_sh_reg, i);
++            radeon_emit(PKT3(indexed ? PKT3_DRAW_INDEX_INDIRECT : PKT3_DRAW_INDIRECT, 3, predicating));
++            radeon_emit(i * stride); /* data_offset */
++            radeon_emit(vertex_offset_reg);
++            radeon_emit(start_instance_reg);
++            radeon_emit(di_src_sel);
++         }
++         radeon_end();
++      }
++      cmd_buffer->state.uses_draw_indirect = true;
++      return;
++   }
++
+    radeon_begin(cs);
+ 
+    if (!use_multi) {
+diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
+index 6928b31..fa9d8cf 100644
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -726,7 +726,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .KHR_device_address_commands = true,
+       .KHR_device_fault = true,
+       .KHR_device_group = true,
+-      .KHR_draw_indirect_count = true,
++      .KHR_draw_indirect_count = pdev->info.has_draw_indirect_multi,
+       .KHR_driver_properties = true,
+       .KHR_dynamic_rendering = true,
+       .KHR_dynamic_rendering_local_read = true,
+@@ -963,7 +963,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .EXT_zero_initialize_device_memory = true,
+       .AMD_buffer_marker = true,
+       .AMD_device_coherent_memory = radv_device_coherent_memory_enabled(pdev),
+-      .AMD_draw_indirect_count = true,
++      .AMD_draw_indirect_count = pdev->info.has_draw_indirect_multi,
+       .AMD_gcn_shader = true,
+       .AMD_gpu_shader_half_float = pdev->info.compiler_info.has_packed_math_16bit,
+       .AMD_gpu_shader_int16 = pdev->info.compiler_info.has_packed_math_16bit,
+@@ -1082,7 +1082,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+ 
+       /* Vulkan 1.2 */
+       .samplerMirrorClampToEdge = true,
+-      .drawIndirectCount = true,
++      .drawIndirectCount = pdev->info.has_draw_indirect_multi,
+       .storageBuffer8BitAccess = true,
+       .uniformAndStorageBuffer8BitAccess = true,
+       .storagePushConstant8 = true,
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index a40e529..1035952 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -356,8 +356,10 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+    /* Nothing RADV records runs as an INDIRECT_BUFFER, so the command buffers
+     * device-generated commands write cannot run. */
+    info->has_gpu_written_ibs = false;
+-   /* The CP firmware hangs on SET_PREDICATION. */
++   /* The CP firmware hangs on SET_PREDICATION, and on
++    * DRAW_(INDEX_)INDIRECT_MULTI. */
+    info->has_set_predication = false;
++   info->has_draw_indirect_multi = false;
+    /* One pool of memory the CPU and the GPU share, which RADV presents as an
+     * integrated GPU's. */
+    info->has_dedicated_vram = false;

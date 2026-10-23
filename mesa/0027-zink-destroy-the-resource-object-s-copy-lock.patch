@@ -1,0 +1,31 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 21 Oct 2026 20:41:29 +0000
+Subject: [PATCH 27/28] zink: destroy the resource object's copy lock
+
+resource_object_create initialises obj->copy_lock with u_rwlock_init,
+and nothing destroyed it. With glibc that costs nothing, the lock living
+in the object. On the PS4 an initialised pthread rwlock holds 64 bytes
+of libkernel's pthread pool until it is destroyed, and that pool is
+fixed: the orbis-ports mesa-ps4 port counted 146 rwlocks created a frame
+and none destroyed, all from here, until the title died with
+"[ScePthread/System] Internal Memory is running out".
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Bb93U7uY5qVNuEcHDggEfE
+---
+ src/gallium/drivers/zink/zink_resource.c | 1 +
+ 1 file changed, 1 insertion(+)
+
+diff --git a/src/gallium/drivers/zink/zink_resource.c b/src/gallium/drivers/zink/zink_resource.c
+index c37fa55..65b8b58 100644
+--- a/src/gallium/drivers/zink/zink_resource.c
++++ b/src/gallium/drivers/zink/zink_resource.c
+@@ -223,6 +223,7 @@ zink_destroy_resource_object(struct zink_screen *screen, struct zink_resource_ob
+    if (!obj->dt)
+       zink_destroy_resource_surface_cache(screen, &obj->surface_cache, obj->is_buffer);
+    simple_mtx_destroy(&obj->surface_mtx);
++   u_rwlock_destroy(&obj->copy_lock);
+    if (!obj->dt && zink_debug & ZINK_DEBUG_MEM)
+       zink_debug_mem_del(screen, obj->bo);
+    for (unsigned i = 0; i < ARRAY_SIZE(obj->copies); i++)

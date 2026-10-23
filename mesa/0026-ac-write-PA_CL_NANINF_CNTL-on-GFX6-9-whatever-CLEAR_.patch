@@ -1,0 +1,43 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 21 Oct 2026 20:41:09 +0000
+Subject: [PATCH 26/28] ac: write PA_CL_NANINF_CNTL on GFX6-9 whatever
+ CLEAR_STATE gives
+
+The GFX6-9 preamble leaves PA_CL_NANINF_CNTL to CLEAR_STATE. On the PS4,
+whose CLEAR_STATE is the system's, the orbis-ports mesa-ps4 port read
+the context registers back after RADV's preamble had run: eight of the
+nine the preamble leaves to CLEAR_STATE held what it would have written,
+but PA_CL_NANINF_CNTL held 0x8b47008d -- twelve bits set outside every
+field of the register, so a value nobody chose -- with VTE_XY_INF_DISCARD
+and VTE_W_INF_DISCARD among them, which make the rasterizer discard
+primitives with an infinite vertex.
+
+The preamble writes it, 0 as everywhere else: the GFX10 and GFX12
+preambles always write it, and so does GFX6-9's without CLEAR_STATE.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01Bb93U7uY5qVNuEcHDggEfE
+---
+ src/amd/common/ac_cmdbuf.c | 7 ++++++-
+ 1 file changed, 6 insertions(+), 1 deletion(-)
+
+diff --git a/src/amd/common/ac_cmdbuf.c b/src/amd/common/ac_cmdbuf.c
+index 3b34709..de856cc 100644
+--- a/src/amd/common/ac_cmdbuf.c
++++ b/src/amd/common/ac_cmdbuf.c
+@@ -255,8 +255,13 @@ gfx6_init_graphics_preamble_state(const struct ac_preamble_state *state,
+    if (!info->has_clear_state)
+       ac_pm4_set_reg(pm4, R_028A1C_VGT_HOS_MIN_TESS_LEVEL, fui(0));
+ 
++   /* Written whatever CLEAR_STATE gives: the PS4's leaves 0x8b47008d there (measured in the orbis-ports
++    * mesa-ps4 port, with bits set outside every field of the register), whose VTE_XY_INF_DISCARD and
++    * VTE_W_INF_DISCARD discard primitives with an infinite vertex.
++    */
++   ac_pm4_set_reg(pm4, R_028820_PA_CL_NANINF_CNTL, 0);
++
+    if (!info->has_clear_state) {
+-      ac_pm4_set_reg(pm4, R_028820_PA_CL_NANINF_CNTL, 0);
+       ac_pm4_set_reg(pm4, R_028AC0_DB_SRESULTS_COMPARE_STATE0, 0x0);
+       ac_pm4_set_reg(pm4, R_028AC4_DB_SRESULTS_COMPARE_STATE1, 0x0);
+       ac_pm4_set_reg(pm4, R_028AC8_DB_PRELOAD_CONTROL, 0x0);
