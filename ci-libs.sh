@@ -8,7 +8,7 @@ PKGS=(sdk openlibm zlib libcxx bzip2 dht enet expat faad2
       lexbor libb64 libconfig libdeflate libfribidi libass libiconv libmad
       libmicrodns libminizip libmodplug libmpeg2 libnatpmp
       libnfs libogg flac libpng libpsl libsamplerate libsmb2 libsodium
-      libtheora libutp libvorbis libyuv lz4 miniupnpc mpg123
+      libtheora libutp libvorbis libyuv lz4 miniupnpc mpg123 dav1d
       json-c libevent libjpeg-turbo libquickjs libvpx libwebp lua luajit
       openssl curl libssh libssh2 opus libsndfile sqlite tinyxml2 xz
       libxml2 yaml-cpp zstd libarchive libzip mesa vulkan-headers ffmpeg

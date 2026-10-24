@@ -1,0 +1,26 @@
+diff --git a/src/thread.h b/src/thread.h
+index 459aace..3507e59 100644
+--- a/src/thread.h
++++ b/src/thread.h
+@@ -132,12 +132,17 @@ static inline int pthread_cond_broadcast(pthread_cond_t *const cond) {
+ #else
+ 
+ #include <pthread.h>
++#if HAVE_PTHREAD_NP_H
+ #if defined(__FreeBSD__)
+- /* ALIGN from <sys/param.h> conflicts with ALIGN from "common/attributes.h" */
+-#define _SYS_PARAM_H_
+-#include <sys/types.h>
++ /* <pthread_np.h> needs <sys/param.h> on older FreeBSD (NBBY, howmany for
++  * cpuset_t), but its ALIGN conflicts with ALIGN from "common/attributes.h",
++  * so keep whichever ALIGN was there before. */
++#pragma push_macro("ALIGN")
++#undef ALIGN
++#include <sys/param.h>
++#undef ALIGN
++#pragma pop_macro("ALIGN")
+ #endif
+-#if HAVE_PTHREAD_NP_H
+ #include <pthread_np.h>
+ #endif
+ 
