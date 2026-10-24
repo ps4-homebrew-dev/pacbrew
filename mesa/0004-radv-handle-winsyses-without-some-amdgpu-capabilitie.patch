@@ -1,86 +1,94 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 155d483bce7fce389397305d2d689710352b02cc Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
-Date: Sat, 17 Oct 2026 15:35:00 +0000
-Subject: [PATCH 06/13] radv: report only what the winsys can do
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 04/12] radv: handle winsyses without some amdgpu capabilities
 
-A winsys that is not amdgpu may lack what RADV assumed every kernel has:
+New radeon_info flags, always set for amdgpu:
+- has_external_fd: memory and syncs can be shared as file descriptors;
+- has_gpu_written_ibs: needed for device-generated commands;
+- has_replayable_va: needed for capture/replay.
 
-- has_external_fd (radeon_winsys_info): memory, semaphores and fences
-  shared as file descriptors. Without it there are no *_fd, dma-buf or
-  DRM format modifier extensions and no external fd handle types.
-- has_gpu_written_ibs (radeon_info): the CP runs a command buffer the GPU
-  wrote; device-generated commands need it.
-- has_replayable_va (radeon_info): a buffer can be placed at an address an
-  earlier allocation was given; every capture and replay feature needs
-  it.
-
-Queue families offer sparse binding only where there is sparse memory,
-and host pointer imports and placed maps are aligned to the GPU's pages
-where those are larger than the CPU's. amdgpu sets all of these as
-before.
+Also, queue families only offer sparse binding when there is sparse
+support, host pointer and placed map alignments respect the GPU's page
+size, and num_compute_queues_on_gfx gives a winsys without a compute
+ring a compute queue family that submits to the graphics ring.
 
 Co-authored-by: Mihawk <163614687+mihawk-99@users.noreply.github.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
 ---
- src/amd/common/ac_gpu_info.c                  |  4 ++
- src/amd/common/ac_gpu_info.h                  |  7 ++++
- src/amd/vulkan/radv_formats.c                 |  5 +++
- src/amd/vulkan/radv_physical_device.c         | 40 ++++++++++---------
- src/amd/vulkan/radv_physical_device.h         |  4 ++
- .../vulkan/winsys/amdgpu/radv_amdgpu_winsys.c |  1 +
- .../winsys/amdgpu/radv_amdgpu_winsys_public.h |  3 ++
- 7 files changed, 46 insertions(+), 18 deletions(-)
+ src/amd/common/ac_gpu_info.c          |  6 ++++
+ src/amd/common/ac_gpu_info.h          |  6 ++++
+ src/amd/vulkan/radv_formats.c         |  7 +++-
+ src/amd/vulkan/radv_physical_device.c | 51 +++++++++++++++------------
+ src/amd/vulkan/radv_physical_device.h |  7 ++++
+ 5 files changed, 53 insertions(+), 24 deletions(-)
 
 diff --git a/src/amd/common/ac_gpu_info.c b/src/amd/common/ac_gpu_info.c
-index 837af8c..b9ca325 100644
+index 837af8c..192efa1 100644
 --- a/src/amd/common/ac_gpu_info.c
 +++ b/src/amd/common/ac_gpu_info.c
-@@ -1062,6 +1062,8 @@ void ac_fill_feature_info(struct radeon_info *info, const struct drm_amdgpu_info
+@@ -1062,6 +1062,9 @@ void ac_fill_feature_info(struct radeon_info *info, const struct drm_amdgpu_info
     info->r600_has_virtual_memory = true;
  
     info->has_userptr = !info->is_virtio;
++   info->has_external_fd = true;
 +   info->has_gpu_written_ibs = true;
 +   info->has_replayable_va = true;
     info->has_syncobj = true;
     info->has_fence_to_handle = true;
  
-@@ -2059,6 +2061,8 @@ void ac_print_gpu_info(FILE *f, const struct radeon_info *info, int fd)
+@@ -2059,6 +2062,9 @@ void ac_print_gpu_info(FILE *f, const struct radeon_info *info, int fd)
     fprintf(f, "Kernel & winsys capabilities:\n");
     fprintf(f, "    drm = %i.%i.%i\n", info->drm_major, info->drm_minor, info->drm_patchlevel);
     fprintf(f, "    has_userptr = %i\n", info->has_userptr);
++   fprintf(f, "    has_external_fd = %i\n", info->has_external_fd);
 +   fprintf(f, "    has_gpu_written_ibs = %i\n", info->has_gpu_written_ibs);
 +   fprintf(f, "    has_replayable_va = %i\n", info->has_replayable_va);
     fprintf(f, "    has_timeline_syncobj = %u\n", info->has_timeline_syncobj);
     fprintf(f, "    has_vm_always_valid = %u\n", info->has_vm_always_valid);
     fprintf(f, "    has_eqaa_surface_allocator = %u\n", info->has_eqaa_surface_allocator);
 diff --git a/src/amd/common/ac_gpu_info.h b/src/amd/common/ac_gpu_info.h
-index 0f7ea3f..d94fcc7 100644
+index 324a74a..7effe45 100644
 --- a/src/amd/common/ac_gpu_info.h
 +++ b/src/amd/common/ac_gpu_info.h
-@@ -371,6 +371,13 @@ struct radeon_info {
+@@ -371,6 +371,10 @@ struct radeon_info {
     bool is_amdgpu;
     bool is_virtio;
     bool has_userptr;
-+   /* Whether the CP runs a command buffer the GPU wrote, chained with
-+    * INDIRECT_BUFFER: device-generated commands need it. */
-+   bool has_gpu_written_ibs;
-+   /* Whether a buffer can be placed at the GPU address an earlier allocation
-+    * was given (RADEON_FLAG_REPLAYABLE with a replay address): every capture
-+    * and replay feature needs it. */
-+   bool has_replayable_va;
++   /* Capabilities that are always present with amdgpu, but not on the PS4. */
++   bool has_external_fd;         /* memory and syncs can be shared as fds */
++   bool has_gpu_written_ibs;     /* the CP can run IBs written by the GPU (DGC) */
++   bool has_replayable_va;       /* buffers can be placed at a replay address */
     bool has_syncobj;
     bool has_timeline_syncobj;
     bool has_fence_to_handle;
+@@ -378,6 +382,8 @@ struct radeon_info {
+    bool has_eqaa_surface_allocator;
+    /* Sparse bindings and basic sparse features (2D image, etc.) */
+    bool has_sparse;
++   /* Queues of a compute queue family that submit to the graphics ring. */
++   uint8_t num_compute_queues_on_gfx;
+    /* 3D sparse images */
+    bool has_sparse_image_3d;
+    /* 3D sparse images with standard block shape */
 diff --git a/src/amd/vulkan/radv_formats.c b/src/amd/vulkan/radv_formats.c
-index 3b49974..09a4455 100644
+index 3b49974..a57a829 100644
 --- a/src/amd/vulkan/radv_formats.c
 +++ b/src/amd/vulkan/radv_formats.c
+@@ -407,7 +407,7 @@ radv_physical_device_get_format_properties(struct radv_physical_device *pdev, Vk
+          if (vk_format_has_depth(format) && vk_format_has_stencil(format))
+             tiled &= ~VK_FORMAT_FEATURE_2_BLIT_DST_BIT;
+ 
+-         if (radv_compute_queue_enabled(pdev)) {
++         if (radv_compute_queue_enabled(pdev) || radv_compute_on_gfx_queue_enabled(pdev)) {
+             tiled |= VK_FORMAT_FEATURE_2_DEPTH_COPY_ON_COMPUTE_QUEUE_BIT_KHR |
+                      VK_FORMAT_FEATURE_2_STENCIL_COPY_ON_COMPUTE_QUEUE_BIT_KHR;
+          }
 @@ -1199,6 +1199,8 @@ get_external_image_format_properties(struct radv_physical_device *pdev,
           break;
        FALLTHROUGH;
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
-+      if (!pdev->has_external_fd)
++      if (!pdev->info.has_external_fd)
 +         break;
        flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
        if (handleType == VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT &&
@@ -96,31 +104,41 @@ index 3b49974..09a4455 100644
     switch (pExternalBufferInfo->handleType) {
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT:
     case VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT:
-+      if (!pdev->has_external_fd)
++      if (!pdev->info.has_external_fd)
 +         break;
        flags = VK_EXTERNAL_MEMORY_FEATURE_EXPORTABLE_BIT | VK_EXTERNAL_MEMORY_FEATURE_IMPORTABLE_BIT;
        compat_flags = export_flags =
           VK_EXTERNAL_MEMORY_HANDLE_TYPE_OPAQUE_FD_BIT | VK_EXTERNAL_MEMORY_HANDLE_TYPE_DMA_BUF_BIT_EXT;
 diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
-index fe39667..607d020 100644
+index fe39667..3706f95 100644
 --- a/src/amd/vulkan/radv_physical_device.c
 +++ b/src/amd/vulkan/radv_physical_device.c
-@@ -725,11 +725,11 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+@@ -402,6 +402,9 @@ radv_physical_device_init_queue_table(struct radv_physical_device *pdev)
+    if (radv_compute_queue_enabled(pdev)) {
+       pdev->vk_queue_to_radv[idx] = RADV_QUEUE_COMPUTE;
+       idx++;
++   } else if (radv_compute_on_gfx_queue_enabled(pdev)) {
++      pdev->vk_queue_to_radv[idx] = RADV_QUEUE_GENERAL;
++      idx++;
+    }
+ 
+    if (radv_video_decode_queue_enabled(pdev)) {
+@@ -725,11 +728,11 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
        .KHR_dynamic_rendering_local_read = true,
        .KHR_extended_flags = true,
        .KHR_external_fence = true,
 -      .KHR_external_fence_fd = true,
-+      .KHR_external_fence_fd = pdev->has_external_fd,
++      .KHR_external_fence_fd = pdev->info.has_external_fd,
        .KHR_external_memory = true,
 -      .KHR_external_memory_fd = true,
-+      .KHR_external_memory_fd = pdev->has_external_fd,
++      .KHR_external_memory_fd = pdev->info.has_external_fd,
        .KHR_external_semaphore = true,
 -      .KHR_external_semaphore_fd = true,
-+      .KHR_external_semaphore_fd = pdev->has_external_fd,
++      .KHR_external_semaphore_fd = pdev->info.has_external_fd,
        .KHR_format_feature_flags2 = true,
        .KHR_fragment_shader_barycentric = pdev->info.gfx_level >= GFX10_3,
        .KHR_fragment_shading_rate = pdev->info.gfx_level >= GFX10_3,
-@@ -860,7 +860,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+@@ -860,7 +863,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
        .EXT_descriptor_indexing = true,
        .EXT_device_address_binding_report = true,
        .EXT_device_fault = true,
@@ -129,25 +147,25 @@ index fe39667..607d020 100644
        .EXT_device_memory_report = true,
        .EXT_discard_rectangles = true,
  #ifdef VK_USE_PLATFORM_DISPLAY_KHR
-@@ -871,7 +871,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+@@ -871,7 +874,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
        .EXT_extended_dynamic_state2 = true,
        .EXT_extended_dynamic_state3 = true,
        .EXT_external_memory_acquire_unmodified = true,
 -      .EXT_external_memory_dma_buf = true,
-+      .EXT_external_memory_dma_buf = pdev->has_external_fd,
++      .EXT_external_memory_dma_buf = pdev->info.has_external_fd,
        .EXT_external_memory_host = pdev->info.has_userptr,
        .EXT_fragment_shader_interlock = radv_has_pops(pdev),
        .EXT_global_priority = true,
-@@ -885,7 +885,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+@@ -885,7 +888,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
  #ifdef RADV_USE_WSI_PLATFORM
        .EXT_image_compression_control_swapchain = radv_compression_control_enabled(pdev),
  #endif
 -      .EXT_image_drm_format_modifier = pdev->info.gfx_level >= GFX9,
-+      .EXT_image_drm_format_modifier = pdev->info.gfx_level >= GFX9 && pdev->has_external_fd,
++      .EXT_image_drm_format_modifier = pdev->info.gfx_level >= GFX9 && pdev->info.has_external_fd,
        .EXT_image_robustness = true,
        .EXT_image_sliced_view_of_3d = pdev->info.gfx_level >= GFX10,
        .EXT_image_view_min_lod = true,
-@@ -1115,7 +1115,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+@@ -1115,7 +1118,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
        .hostQueryReset = true,
        .timelineSemaphore = pdev->info.has_timeline_syncobj,
        .bufferDeviceAddress = true,
@@ -156,7 +174,7 @@ index fe39667..607d020 100644
        .bufferDeviceAddressMultiDevice = false,
        .vulkanMemoryModel = true,
        .vulkanMemoryModelDeviceScope = true,
-@@ -1279,7 +1279,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+@@ -1279,7 +1282,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
  
        /* VK_KHR_acceleration_structure */
        .accelerationStructure = true,
@@ -165,7 +183,7 @@ index fe39667..607d020 100644
        .accelerationStructureIndirectBuild = false,
        .accelerationStructureHostCommands = false,
        .descriptorBindingAccelerationStructureUpdateAfterBind = true,
-@@ -1335,7 +1335,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+@@ -1335,7 +1338,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
  
        /* VK_KHR_ray_tracing_pipeline */
        .rayTracingPipeline = true,
@@ -174,7 +192,7 @@ index fe39667..607d020 100644
        .rayTracingPipelineShaderGroupHandleCaptureReplayMixed = false,
        .rayTracingPipelineTraceRaysIndirect = pdev->info.gfx_level >= GFX7,
        .rayTraversalPrimitiveCulling = true,
-@@ -1430,7 +1430,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+@@ -1430,7 +1433,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
  
        /* VK_EXT_descriptor_buffer */
        .descriptorBuffer = true,
@@ -183,7 +201,7 @@ index fe39667..607d020 100644
        .descriptorBufferImageLayoutIgnored = true,
        .descriptorBufferPushDescriptors = true,
  
-@@ -1551,8 +1551,8 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+@@ -1551,8 +1554,8 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
        .depthClampControl = true,
  
        /* VK_EXT_device_generated_commands */
@@ -194,7 +212,7 @@ index fe39667..607d020 100644
  
        /* VK_KHR_maintenance8 */
        .maintenance8 = true,
-@@ -1655,7 +1655,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+@@ -1655,7 +1658,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
  
        /* VK_EXT_descriptor_heap */
        .descriptorHeap = true,
@@ -203,7 +221,16 @@ index fe39667..607d020 100644
  
        /* VK_KHR_shader_constant_data */
        .shaderConstantData = true,
-@@ -2091,7 +2091,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
+@@ -1805,7 +1808,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
+    VkQueueFlags copy_memory_indirect_queues = 0;
+    if (radv_graphics_queue_enabled(pdev))
+       copy_memory_indirect_queues |= VK_QUEUE_GRAPHICS_BIT;
+-   if (radv_compute_queue_enabled(pdev))
++   if (radv_compute_queue_enabled(pdev) || radv_compute_on_gfx_queue_enabled(pdev))
+       copy_memory_indirect_queues |= VK_QUEUE_COMPUTE_BIT;
+ 
+    pdev->vk.properties = (struct vk_properties){
+@@ -2091,7 +2094,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
        .maxDiscardRectangles = MAX_DISCARD_RECTANGLES,
  
        /* VK_EXT_external_memory_host */
@@ -212,84 +239,69 @@ index fe39667..607d020 100644
  
        /* VK_AMD_shader_core_properties */
        /* Shader engines. */
-@@ -2315,7 +2315,8 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
+@@ -2315,7 +2318,7 @@ radv_get_physical_device_properties(struct radv_physical_device *pdev)
        .cooperativeMatrixSupportedStages = VK_SHADER_STAGE_COMPUTE_BIT,
  
        /* VK_EXT_map_memory_placed */
 -      .minPlacedMemoryMapAlignment = os_page_size,
-+      /* The kernel maps whole pages, which may be larger than the CPU's. */
 +      .minPlacedMemoryMapAlignment = MAX2(os_page_size, pdev->info.gart_page_size),
  
        /* VK_EXT_nested_command_buffer */
        .maxCommandBufferNestingLevel = UINT32_MAX,
-@@ -2623,6 +2624,7 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
+@@ -2953,7 +2956,7 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
+    if (radv_graphics_queue_enabled(pdev))
+       num_queue_families++;
  
-    if (instance->vk.enabled_extensions.KHR_display) {
-       wsi_master_fd = open(drm_device->nodes[DRM_NODE_PRIMARY], O_RDWR | O_CLOEXEC);
-+   pdev->has_external_fd = winsys_info.has_external_fd;
-       if (wsi_master_fd >= 0) {
-          uint32_t accel_working = 0;
-          struct drm_amdgpu_info request = {.return_pointer = (uintptr_t)&accel_working,
-@@ -2981,8 +2983,9 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
+-   if (radv_compute_queue_enabled(pdev))
++   if (radv_compute_queue_enabled(pdev) || radv_compute_on_gfx_queue_enabled(pdev))
+       num_queue_families++;
+ 
+    if (radv_video_decode_queue_enabled(pdev))
+@@ -2981,8 +2984,8 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
     idx = 0;
     if (radv_graphics_queue_enabled(pdev)) {
        if (*pCount >= 1) {
 -         VkQueueFlags gfx_flags =
 -            VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
-+         /* Sparse binding only where sparse memory is supported. */
 +         VkQueueFlags gfx_flags = VK_QUEUE_GRAPHICS_BIT | VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT |
 +                                  (pdev->info.has_sparse ? VK_QUEUE_SPARSE_BINDING_BIT : 0);
           *pQueueFamilyProperties[idx] = (VkQueueFamilyProperties){
              .queueFlags = gfx_flags | radv_queue_family_protected_flag(pdev, RADV_QUEUE_GENERAL),
              .queueCount = 1,
-@@ -2994,7 +2997,8 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
+@@ -2993,12 +2996,14 @@ radv_get_physical_device_queue_family_properties(struct radv_physical_device *pd
+       }
     }
  
-    if (radv_compute_queue_enabled(pdev)) {
+-   if (radv_compute_queue_enabled(pdev)) {
 -      VkQueueFlags compute_flags = VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | VK_QUEUE_SPARSE_BINDING_BIT;
++   if (radv_compute_queue_enabled(pdev) || radv_compute_on_gfx_queue_enabled(pdev)) {
 +      VkQueueFlags compute_flags =
 +         VK_QUEUE_COMPUTE_BIT | VK_QUEUE_TRANSFER_BIT | (pdev->info.has_sparse ? VK_QUEUE_SPARSE_BINDING_BIT : 0);
        if (*pCount > idx) {
           *pQueueFamilyProperties[idx] = (VkQueueFamilyProperties){
-             .queueFlags = compute_flags | radv_queue_family_protected_flag(pdev, RADV_QUEUE_COMPUTE),
+-            .queueFlags = compute_flags | radv_queue_family_protected_flag(pdev, RADV_QUEUE_COMPUTE),
+-            .queueCount = pdev->info.ip[AMD_IP_COMPUTE].num_queues,
++            .queueFlags = compute_flags | radv_queue_family_protected_flag(pdev, pdev->vk_queue_to_radv[idx]),
++            .queueCount = radv_compute_queue_enabled(pdev) ? pdev->info.ip[AMD_IP_COMPUTE].num_queues
++                                                           : pdev->info.num_compute_queues_on_gfx,
+             .timestampValidBits = 64,
+             .minImageTransferGranularity = (VkExtent3D){1, 1, 1},
+          };
 diff --git a/src/amd/vulkan/radv_physical_device.h b/src/amd/vulkan/radv_physical_device.h
-index 3e88dda..638faee 100644
+index 3e88dda..85699b2 100644
 --- a/src/amd/vulkan/radv_physical_device.h
 +++ b/src/amd/vulkan/radv_physical_device.h
-@@ -131,6 +131,10 @@ struct radv_physical_device {
-    /* Whether to use the LLVM compiler backend */
-    bool use_llvm;
+@@ -218,6 +218,13 @@ radv_physical_device_instance(const struct radv_physical_device *pdev)
+    return (struct radv_instance *)pdev->vk.instance;
+ }
  
-+   /* Whether memory, semaphores and fences can be shared as file descriptors
-+    * (opaque fd, sync fd, dma-buf): the winsys's has_external_fd. */
-+   bool has_external_fd;
++/* A compute queue family whose queues are RADV_QUEUE_GENERAL queues. */
++static inline bool
++radv_compute_on_gfx_queue_enabled(const struct radv_physical_device *pdev)
++{
++   return pdev->info.num_compute_queues_on_gfx > 0 && pdev->info.ip[AMD_IP_COMPUTE].num_queues == 0;
++}
 +
-    /* Whether to emulate ETC2 image support on HW without support. */
-    bool emulate_etc2;
- 
-diff --git a/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys.c b/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys.c
-index c47d421..2338508 100644
---- a/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys.c
-+++ b/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys.c
-@@ -361,6 +361,7 @@ radv_amdgpu_winsys_query_info(int fd, uint64_t debug_flags, bool is_virtio, stru
-    info->base.ip[AMD_IP_COMPUTE].num_queues = MIN2(info->base.ip[AMD_IP_COMPUTE].num_queues, MAX_RINGS_PER_TYPE);
- 
-    info->syncobj_sync_type = vk_drm_syncobj_get_type(fd);
-+   info->has_external_fd = true;
- 
-    /* Determine which context priorities are supported. */
-    for (uint32_t p = RADEON_CTX_PRIORITY_LOW; p <= RADEON_CTX_PRIORITY_REALTIME; p++) {
-diff --git a/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys_public.h b/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys_public.h
-index cc3a484..ecc3d15 100644
---- a/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys_public.h
-+++ b/src/amd/vulkan/winsys/amdgpu/radv_amdgpu_winsys_public.h
-@@ -24,6 +24,9 @@ struct radeon_winsys_info {
-    struct radeon_info base;
-    struct vk_sync_type syncobj_sync_type;
-    uint32_t global_priority_mask;
-+   /* Memory, semaphores and fences can be shared as file descriptors
-+    * (opaque fd, sync fd, dma-buf). */
-+   bool has_external_fd;
- };
- 
- VkResult radv_amdgpu_winsys_query_info(int fd, uint64_t debug_flags, bool is_virtio, struct radeon_winsys_info *info);
+ static inline bool
+ radv_dedicated_sparse_queue_enabled(const struct radv_physical_device *pdev)
+ {

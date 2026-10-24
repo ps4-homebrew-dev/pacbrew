@@ -1,0 +1,514 @@
+From 07760af4c4e769b815269fe1c84c312b450474a6 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 05/12] ac, radv: work around PS4 GPU and firmware differences
+
+The PS4's system software sets up the GPU differently from the amdgpu
+kernel:
+
+- PA_SC_RASTER_CONFIG is set by the system (has_kernel_raster_config).
+- CLEAR_STATE leaves garbage in PA_CL_NANINF_CNTL, so it is always
+  written on GFX6-9.
+- SH_MEM_CONFIG.ALIGNMENT_MODE isn't UNALIGNED, so misaligned typed
+  vertex fetches return wrong data (has_unaligned_typed_vtx_fetch).
+- The CP hangs on SET_PREDICATION (has_set_predication) and on
+  DRAW_(INDEX_)INDIRECT_MULTI (has_draw_indirect_multi), and the CB on
+  surfaces with CMASK (has_cmask). Without them, conditional rendering,
+  draw indirect count, CMASK and FMASK are not used.
+- The GS ring sizes and the tessellation factor ring are owned by the
+  system, which ignores the driver's register writes
+  (fixed_gs_ring_size, fixed_tess_factor_ring_va).
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+---
+ src/amd/common/ac_cmdbuf.c                    |  9 ++++-
+ src/amd/common/ac_cmdbuf_cp.c                 |  3 +-
+ src/amd/common/ac_gpu_info.c                  |  8 +++++
+ src/amd/common/ac_gpu_info.h                  | 14 ++++++++
+ src/amd/common/ac_shader_util.c               | 12 +++----
+ src/amd/common/ac_shader_util.h               |  2 +-
+ src/amd/compiler/aco_ir.cpp                   |  1 +
+ src/amd/compiler/aco_ir.h                     |  1 +
+ .../aco_select_nir_intrinsics.cpp             |  4 +--
+ src/amd/llvm/ac_llvm_build.c                  |  2 +-
+ src/amd/vulkan/meta/radv_meta_fast_clear.c    |  3 ++
+ src/amd/vulkan/radv_cmd_buffer.c              | 32 ++++++++++++++++--
+ src/amd/vulkan/radv_image.c                   |  4 ++-
+ src/amd/vulkan/radv_physical_device.c         | 13 ++++----
+ src/amd/vulkan/radv_queue.c                   | 33 +++++++++++++++----
+ 15 files changed, 114 insertions(+), 27 deletions(-)
+
+diff --git a/src/amd/common/ac_cmdbuf.c b/src/amd/common/ac_cmdbuf.c
+index ea67cbf..a76c447 100644
+--- a/src/amd/common/ac_cmdbuf.c
++++ b/src/amd/common/ac_cmdbuf.c
+@@ -223,6 +223,9 @@ ac_emit_raster_config(const struct radeon_info *info, struct ac_pm4_state *pm4)
+    const unsigned num_rb = MIN2(info->max_render_backends, 16);
+    const uint64_t rb_mask = info->enabled_rb_mask;
+ 
++   if (info->has_kernel_raster_config)
++      return;
++
+    if (!rb_mask || util_bitcount64(rb_mask) >= num_rb) {
+       /* Always use the default config when all backends are enabled
+        * (or when we failed to determine the enabled backends).
+@@ -252,8 +255,12 @@ gfx6_init_graphics_preamble_state(const struct ac_preamble_state *state,
+    if (!info->has_clear_state)
+       ac_pm4_set_reg(pm4, R_028A1C_VGT_HOS_MIN_TESS_LEVEL, fui(0));
+ 
++   /* Always written: the PS4's CLEAR_STATE leaves garbage here (0x8b47008d), which enables
++    * VTE_XY_INF_DISCARD and VTE_W_INF_DISCARD.
++    */
++   ac_pm4_set_reg(pm4, R_028820_PA_CL_NANINF_CNTL, 0);
++
+    if (!info->has_clear_state) {
+-      ac_pm4_set_reg(pm4, R_028820_PA_CL_NANINF_CNTL, 0);
+       ac_pm4_set_reg(pm4, R_028AC0_DB_SRESULTS_COMPARE_STATE0, 0x0);
+       ac_pm4_set_reg(pm4, R_028AC4_DB_SRESULTS_COMPARE_STATE1, 0x0);
+       ac_pm4_set_reg(pm4, R_028AC8_DB_PRELOAD_CONTROL, 0x0);
+diff --git a/src/amd/common/ac_cmdbuf_cp.c b/src/amd/common/ac_cmdbuf_cp.c
+index 18ada0a..720d80e 100644
+--- a/src/amd/common/ac_cmdbuf_cp.c
++++ b/src/amd/common/ac_cmdbuf_cp.c
+@@ -343,7 +343,8 @@ void
+ ac_emit_cp_tess_rings(struct ac_cmdbuf *cs, const struct radeon_info *info,
+                       uint64_t attr_ring_va)
+ {
+-   const uint64_t va = attr_ring_va + info->tess_offchip_ring_size;
++   const uint64_t va = info->fixed_tess_factor_ring_va ? info->fixed_tess_factor_ring_va
++                                                       : attr_ring_va + info->tess_offchip_ring_size;
+    uint32_t tf_ring_size = info->tess_factor_ring_size / 4;
+ 
+    if (info->gfx_level >= GFX11) {
+diff --git a/src/amd/common/ac_gpu_info.c b/src/amd/common/ac_gpu_info.c
+index 192efa1..b7298e4 100644
+--- a/src/amd/common/ac_gpu_info.c
++++ b/src/amd/common/ac_gpu_info.c
+@@ -370,6 +370,7 @@ ac_fill_compiler_info(struct radeon_info *info, const struct drm_amdgpu_info_dev
+    out->has_gfx6_mrt_export_bug =
+       info->family == CHIP_TAHITI || info->family == CHIP_PITCAIRN || info->family == CHIP_VERDE;
+    out->has_vtx_format_alpha_adjust_bug = info->gfx_level <= GFX8 && info->family != CHIP_STONEY;
++   out->has_unaligned_typed_vtx_fetch = info->gfx_level >= GFX7 && info->gfx_level <= GFX9;
+ 
+    /* On GFX6-7, SMEM instructions access memory when num_records == 0 or offset >= num_records,
+     * which causes VM faults when reading a page that isn't mapped. To prevent the VM faults:
+@@ -1065,6 +1066,9 @@ void ac_fill_feature_info(struct radeon_info *info, const struct drm_amdgpu_info
+    info->has_external_fd = true;
+    info->has_gpu_written_ibs = true;
+    info->has_replayable_va = true;
++   info->has_set_predication = true;
++   info->has_draw_indirect_multi = true;
++   info->has_cmask = true;
+    info->has_syncobj = true;
+    info->has_fence_to_handle = true;
+ 
+@@ -2065,6 +2069,9 @@ void ac_print_gpu_info(FILE *f, const struct radeon_info *info, int fd)
+    fprintf(f, "    has_external_fd = %i\n", info->has_external_fd);
+    fprintf(f, "    has_gpu_written_ibs = %i\n", info->has_gpu_written_ibs);
+    fprintf(f, "    has_replayable_va = %i\n", info->has_replayable_va);
++   fprintf(f, "    has_set_predication = %i\n", info->has_set_predication);
++   fprintf(f, "    has_draw_indirect_multi = %i\n", info->has_draw_indirect_multi);
++   fprintf(f, "    has_cmask = %i\n", info->has_cmask);
+    fprintf(f, "    has_timeline_syncobj = %u\n", info->has_timeline_syncobj);
+    fprintf(f, "    has_vm_always_valid = %u\n", info->has_vm_always_valid);
+    fprintf(f, "    has_eqaa_surface_allocator = %u\n", info->has_eqaa_surface_allocator);
+@@ -2132,6 +2139,7 @@ void ac_print_gpu_info(FILE *f, const struct radeon_info *info, int fd)
+    fprintf(f, "    smaller_tcs_workgroups = %i\n", info->compiler_info.smaller_tcs_workgroups);
+    fprintf(f, "    has_gfx6_mrt_export_bug = %i\n", info->compiler_info.has_gfx6_mrt_export_bug);
+    fprintf(f, "    has_vtx_format_alpha_adjust_bug = %i\n", info->compiler_info.has_vtx_format_alpha_adjust_bug);
++   fprintf(f, "    has_unaligned_typed_vtx_fetch = %i\n", info->compiler_info.has_unaligned_typed_vtx_fetch);
+    fprintf(f, "    has_smem_oob_access_bug = %i\n", info->compiler_info.has_smem_oob_access_bug);
+    fprintf(f, "    has_image_load_dcc_bug = %i\n", info->compiler_info.has_image_load_dcc_bug);
+    fprintf(f, "    has_ls_vgpr_init_bug = %i\n", info->compiler_info.has_ls_vgpr_init_bug);
+diff --git a/src/amd/common/ac_gpu_info.h b/src/amd/common/ac_gpu_info.h
+index 7effe45..eb574c8 100644
+--- a/src/amd/common/ac_gpu_info.h
++++ b/src/amd/common/ac_gpu_info.h
+@@ -184,6 +184,8 @@ struct ac_compiler_info {
+    uint32_t has_gfx6_mrt_export_bug : 1;
+    /* Pre-GFX9: A bug where the alpha component of 10_10_10_2 formats is always unsigned.*/
+    uint32_t has_vtx_format_alpha_adjust_bug : 1;
++   /* GFX7-9: typed buffer loads may be unaligned (SH_MEM_CONFIG.ALIGNMENT_MODE = UNALIGNED). */
++   uint32_t has_unaligned_typed_vtx_fetch : 1;
+    /* GFX6-7: SMEM accesses memory even when it's out of bounds */
+    uint32_t has_smem_oob_access_bug : 1;
+    /* GFX10.3: WRITE_COMPRESS_ENABLE must be 0 for all image loads. */
+@@ -375,6 +377,9 @@ struct radeon_info {
+    bool has_external_fd;         /* memory and syncs can be shared as fds */
+    bool has_gpu_written_ibs;     /* the CP can run IBs written by the GPU (DGC) */
+    bool has_replayable_va;       /* buffers can be placed at a replay address */
++   bool has_set_predication;     /* the CP does not hang on SET_PREDICATION */
++   bool has_draw_indirect_multi; /* the CP does not hang on DRAW_*INDIRECT_MULTI */
++   bool has_cmask;               /* the CB does not hang on CMASK (and FMASK) */
+    bool has_syncobj;
+    bool has_timeline_syncobj;
+    bool has_fence_to_handle;
+@@ -456,10 +461,19 @@ struct radeon_info {
+    uint32_t spi_cu_en;
+ 
+    /* Raster config. */
++   /* PA_SC_RASTER_CONFIG is set by the kernel and must not be written. */
++   bool has_kernel_raster_config;
+    uint32_t pa_sc_raster_config;
+    uint32_t pa_sc_raster_config_1;
+    uint32_t se_tile_repeat;
+ 
++   /* Ring registers owned by the system (the PS4), which ignores the driver's writes:
++    * the size the VGT wraps the legacy GS rings at, and the tess factor ring. 0 otherwise.
++    */
++   uint32_t fixed_gs_ring_size;
++   uint64_t fixed_tess_factor_ring_va;
++   uint32_t fixed_tess_factor_ring_size;
++
+    struct {
+       uint32_t shadow_size;
+       uint32_t shadow_alignment;
+diff --git a/src/amd/common/ac_shader_util.c b/src/amd/common/ac_shader_util.c
+index 1d86e1a..b7a1490 100644
+--- a/src/amd/common/ac_shader_util.c
++++ b/src/amd/common/ac_shader_util.c
+@@ -505,14 +505,14 @@ ac_get_vtx_format_info(enum amd_gfx_level level, bool has_alpha_adjust_bug, enum
+  * offset is 2 for R16G16B16A16_SNORM).
+  */
+ static bool
+-is_fetch_size_safe(const enum amd_gfx_level gfx_level, const struct ac_vtx_format_info* vtx_info,
++is_fetch_size_safe(const bool unaligned_typed_fetch, const struct ac_vtx_format_info* vtx_info,
+                    const unsigned offset, const unsigned alignment, const unsigned channels)
+ {
+    if (!(vtx_info->has_hw_format & BITFIELD_BIT(channels - 1)))
+       return false;
+ 
+    unsigned vertex_byte_size = vtx_info->chan_byte_size * channels;
+-   return (gfx_level >= GFX7 && gfx_level <= GFX9) ||
++   return unaligned_typed_fetch ||
+           (offset % vertex_byte_size == 0 && MAX2(alignment, 1) % vertex_byte_size == 0);
+ }
+ 
+@@ -521,7 +521,7 @@ is_fetch_size_safe(const enum amd_gfx_level gfx_level, const struct ac_vtx_forma
+  * instructions without triggering alignment-related issues.
+  */
+ unsigned
+-ac_get_safe_fetch_size(const enum amd_gfx_level gfx_level, const struct ac_vtx_format_info* vtx_info,
++ac_get_safe_fetch_size(const bool unaligned_typed_fetch, const struct ac_vtx_format_info* vtx_info,
+                        const unsigned offset, const unsigned max_channels, const unsigned alignment,
+                        const unsigned num_channels)
+ {
+@@ -530,13 +530,13 @@ ac_get_safe_fetch_size(const enum amd_gfx_level gfx_level, const struct ac_vtx_f
+       return vtx_info->num_channels;
+ 
+    /* Early exit if the specified number of channels is fine. */
+-   if (is_fetch_size_safe(gfx_level, vtx_info, offset, alignment, num_channels))
++   if (is_fetch_size_safe(unaligned_typed_fetch, vtx_info, offset, alignment, num_channels))
+       return num_channels;
+ 
+    /* First, assume that more load instructions are worse and try using a larger data format. */
+    unsigned new_channels = num_channels + 1;
+    while (new_channels <= max_channels &&
+-          !is_fetch_size_safe(gfx_level, vtx_info, offset, alignment, new_channels)) {
++          !is_fetch_size_safe(unaligned_typed_fetch, vtx_info, offset, alignment, new_channels)) {
+       new_channels++;
+    }
+ 
+@@ -547,7 +547,7 @@ ac_get_safe_fetch_size(const enum amd_gfx_level gfx_level, const struct ac_vtx_f
+    /* Try decreasing load size (at the cost of more load instructions). */
+    new_channels = num_channels;
+    while (new_channels > 1 &&
+-          !is_fetch_size_safe(gfx_level, vtx_info, offset, alignment, new_channels)) {
++          !is_fetch_size_safe(unaligned_typed_fetch, vtx_info, offset, alignment, new_channels)) {
+       new_channels--;
+    }
+ 
+diff --git a/src/amd/common/ac_shader_util.h b/src/amd/common/ac_shader_util.h
+index 6a622c6..3b51bf3 100644
+--- a/src/amd/common/ac_shader_util.h
++++ b/src/amd/common/ac_shader_util.h
+@@ -253,7 +253,7 @@ const struct ac_vtx_format_info *ac_get_vtx_format_info(enum amd_gfx_level level
+                                                         bool has_alpha_adjust_bug,
+                                                         enum pipe_format fmt);
+ 
+-unsigned ac_get_safe_fetch_size(const enum amd_gfx_level gfx_level, const struct ac_vtx_format_info* vtx_info,
++unsigned ac_get_safe_fetch_size(const bool unaligned_typed_fetch, const struct ac_vtx_format_info* vtx_info,
+                                 const unsigned offset, const unsigned max_channels, const unsigned alignment,
+                                 const unsigned num_channels);
+ 
+diff --git a/src/amd/compiler/aco_ir.cpp b/src/amd/compiler/aco_ir.cpp
+index 1955bf7..1ce955f 100644
+--- a/src/amd/compiler/aco_ir.cpp
++++ b/src/amd/compiler/aco_ir.cpp
+@@ -122,6 +122,7 @@ init_program(Program* program, Stage stage, const struct aco_shader_info* info,
+    program->dev.has_mad32 = options->compiler_info->has_mad32;
+ 
+    program->dev.has_desc_resource_level = options->compiler_info->has_desc_resource_level;
++   program->dev.has_unaligned_typed_vtx_fetch = options->compiler_info->has_unaligned_typed_vtx_fetch;
+ 
+    if (program->gfx_level >= GFX12) {
+       program->dev.scratch_global_offset_min = -8388608;
+diff --git a/src/amd/compiler/aco_ir.h b/src/amd/compiler/aco_ir.h
+index 4082a95..16a9656 100644
+--- a/src/amd/compiler/aco_ir.h
++++ b/src/amd/compiler/aco_ir.h
+@@ -2305,6 +2305,7 @@ struct DeviceInfo {
+    bool has_point_sample_accel = false;
+    bool has_gfx6_mrt_export_bug = false;
+    bool has_desc_resource_level = false;
++   bool has_unaligned_typed_vtx_fetch = false;
+ 
+    int32_t scratch_global_offset_min;
+    int32_t scratch_global_offset_max;
+diff --git a/src/amd/compiler/instruction_selection/aco_select_nir_intrinsics.cpp b/src/amd/compiler/instruction_selection/aco_select_nir_intrinsics.cpp
+index e36562d..bc5a6f9 100644
+--- a/src/amd/compiler/instruction_selection/aco_select_nir_intrinsics.cpp
++++ b/src/amd/compiler/instruction_selection/aco_select_nir_intrinsics.cpp
+@@ -1304,8 +1304,8 @@ mtbuf_load_callback(Builder& bld, const LoadEmitInfo& info, unsigned bytes_neede
+    /* Calculate maximum number of components loaded according to alignment. */
+    unsigned max_fetched_components = bytes_needed / info.component_size;
+    max_fetched_components =
+-      ac_get_safe_fetch_size(bld.program->gfx_level, vtx_info, info.const_offset, max_components,
+-                             alignment, max_fetched_components);
++      ac_get_safe_fetch_size(bld.program->dev.has_unaligned_typed_vtx_fetch, vtx_info, info.const_offset,
++                             max_components, alignment, max_fetched_components);
+    const unsigned fetch_fmt = vtx_info->hw_format[max_fetched_components - 1];
+    /* Adjust bytes needed in case we need to do a smaller load due to alignment.
+     * If a larger format is selected, it's still OK to load a smaller amount from it.
+diff --git a/src/amd/llvm/ac_llvm_build.c b/src/amd/llvm/ac_llvm_build.c
+index 1bc26e0..7e45b2e 100644
+--- a/src/amd/llvm/ac_llvm_build.c
++++ b/src/amd/llvm/ac_llvm_build.c
+@@ -1093,7 +1093,7 @@ LLVMValueRef ac_build_safe_tbuffer_load(struct ac_llvm_context *ctx, LLVMValueRe
+       const unsigned fetch_alignment = fetch_align_offset ? 1 << (ffs(fetch_align_offset) - 1) : align_mul;
+ 
+       fetch_num_channels =
+-         ac_get_safe_fetch_size(ctx->gfx_level, vtx_info, fetch_const_offset,
++         ac_get_safe_fetch_size(ctx->info->has_unaligned_typed_vtx_fetch, vtx_info, fetch_const_offset,
+                                 max_channels - i, fetch_alignment, num_channels - i);
+       const unsigned fetch_format = vtx_info->hw_format[fetch_num_channels - 1];
+       LLVMValueRef fetch_voffset =
+diff --git a/src/amd/vulkan/meta/radv_meta_fast_clear.c b/src/amd/vulkan/meta/radv_meta_fast_clear.c
+index 4b6c22b..ba31d95 100644
+--- a/src/amd/vulkan/meta/radv_meta_fast_clear.c
++++ b/src/amd/vulkan/meta/radv_meta_fast_clear.c
+@@ -376,6 +376,9 @@ radv_process_color_image(struct radv_cmd_buffer *cmd_buffer, struct radv_image *
+       pred_offset = 0;
+    }
+ 
++   if (!pdev->info.has_set_predication)
++      pred_offset = 0;
++
+    if (pred_offset) {
+       pred_offset += 8 * subresourceRange->baseMipLevel;
+ 
+diff --git a/src/amd/vulkan/radv_cmd_buffer.c b/src/amd/vulkan/radv_cmd_buffer.c
+index 0fea709..3f73795 100644
+--- a/src/amd/vulkan/radv_cmd_buffer.c
++++ b/src/amd/vulkan/radv_cmd_buffer.c
+@@ -6036,7 +6036,7 @@ lookup_vs_prolog(struct radv_cmd_buffer *cmd_buffer, const struct radv_shader *v
+    uint32_t misaligned_mask = d->vertex_input.vbo_misaligned_mask;
+    uint32_t unaligned_mask = d->vertex_input.vbo_unaligned_mask;
+    if (d->vertex_input.vbo_misaligned_mask_invalid) {
+-      bool misalignment_possible = pdev->info.gfx_level == GFX6 || pdev->info.gfx_level >= GFX10;
++      bool misalignment_possible = !pdev->info.compiler_info.has_unaligned_typed_vtx_fetch;
+       u_foreach_bit (index, d->vertex_input.vbo_misaligned_mask_invalid & attribute_mask) {
+          uint8_t binding = d->vertex_input.bindings[index];
+          if (!(cmd_buffer->state.vertex_buffer.bound_mask & BITFIELD_BIT(binding)))
+@@ -9626,7 +9626,7 @@ radv_CmdSetVertexInputEXT(VkCommandBuffer commandBuffer, uint32_t vertexBindingD
+       if (vertex_buffer->bound_mask & BITFIELD_BIT(attrib->binding)) {
+          uint32_t stride = binding->stride;
+          uint64_t addr = vertex_buffer->bindings[attrib->binding].addr + vertex_input->offsets[loc];
+-         if ((chip == GFX6 || chip >= GFX10) && ((stride | addr) & format_align_req_minus_1))
++         if (!pdev->info.compiler_info.has_unaligned_typed_vtx_fetch && ((stride | addr) & format_align_req_minus_1))
+             vertex_input->vbo_misaligned_mask |= BITFIELD_BIT(loc);
+          if ((stride | addr) & component_align_req_minus_1)
+             vertex_input->vbo_unaligned_mask |= BITFIELD_BIT(loc);
+@@ -11254,6 +11254,7 @@ radv_cs_emit_indirect_draw_packet(struct radv_cmd_buffer *cmd_buffer, bool index
+                                   uint64_t count_va, uint32_t stride, bool use_multi)
+ {
+    const struct radv_device *device = radv_cmd_buffer_device(cmd_buffer);
++   const struct radv_physical_device *pdev = radv_device_physical(device);
+    struct radv_cmd_stream *cs = cmd_buffer->cs;
+    const unsigned di_src_sel = indexed ? V_0287F0_DI_SRC_SEL_DMA : V_0287F0_DI_SRC_SEL_AUTO_INDEX;
+    bool draw_id_enable = cmd_buffer->state.uses_drawid;
+@@ -11271,6 +11272,30 @@ radv_cs_emit_indirect_draw_packet(struct radv_cmd_buffer *cmd_buffer, bool index
+    if (draw_id_enable)
+       draw_id_reg = ((base_reg + 4) - SI_SH_REG_OFFSET) >> 2;
+ 
++   if (use_multi && !pdev->info.has_draw_indirect_multi) {
++      /* One DRAW_INDIRECT per draw (drawIndirectCount isn't supported without MULTI). */
++      assert(!count_va);
++      const uint32_t draw_id_sh_reg = base_reg + 4;
++      const unsigned dw_per_draw = (draw_id_enable ? 3 : 0) + 5;
++      for (uint32_t first = 0; first < draw_count; first += 1024) {
++         const uint32_t batch = MIN2(draw_count - first, 1024);
++         radeon_check_space(device->ws, cs->b, batch * dw_per_draw);
++         radeon_begin(cs);
++         for (uint32_t i = first; i < first + batch; i++) {
++            if (draw_id_enable)
++               radeon_set_sh_reg(draw_id_sh_reg, i);
++            radeon_emit(PKT3(indexed ? PKT3_DRAW_INDEX_INDIRECT : PKT3_DRAW_INDIRECT, 3, predicating));
++            radeon_emit(i * stride); /* data_offset */
++            radeon_emit(vertex_offset_reg);
++            radeon_emit(start_instance_reg);
++            radeon_emit(di_src_sel);
++         }
++         radeon_end();
++      }
++      cmd_buffer->state.uses_draw_indirect = true;
++      return;
++   }
++
+    radeon_begin(cs);
+ 
+    if (!use_multi) {
+@@ -16006,6 +16031,9 @@ radv_emit_set_predication_state(struct radv_cmd_buffer *cmd_buffer, bool draw_vi
+    struct radv_cmd_stream *cs = cmd_buffer->cs;
+    uint32_t op = 0;
+ 
++   if (!pdev->info.has_set_predication)
++      return;
++
+    radeon_check_space(device->ws, cs->b, 4);
+ 
+    if (va) {
+diff --git a/src/amd/vulkan/radv_image.c b/src/amd/vulkan/radv_image.c
+index 05d02b3..cb3fa93 100644
+--- a/src/amd/vulkan/radv_image.c
++++ b/src/amd/vulkan/radv_image.c
+@@ -843,10 +843,12 @@ static void
+ radv_image_alloc_single_sample_cmask(const struct radv_device *device, const struct radv_image *image,
+                                      struct radeon_surf *surf)
+ {
++   const struct radv_physical_device *pdev = radv_device_physical(device);
++
+    if (!surf->cmask_size || surf->cmask_offset || surf->bpe > 8 || image->vk.mip_levels > 1 ||
+        image->vk.extent.depth > 1 || radv_image_has_dcc(image) || !radv_image_use_fast_clear_for_image(device, image) ||
+        (image->vk.create_flags & VK_IMAGE_CREATE_2_SPARSE_BINDING_BIT_KHR) ||
+-       (image->vk.usage & VK_IMAGE_USAGE_2_HOST_TRANSFER_BIT_KHR))
++       (image->vk.usage & VK_IMAGE_USAGE_2_HOST_TRANSFER_BIT_KHR) || !pdev->info.has_cmask)
+       return;
+ 
+    assert(image->vk.samples == 1);
+diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
+index 3706f95..3e07ef2 100644
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -722,7 +722,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .KHR_device_address_commands = true,
+       .KHR_device_fault = true,
+       .KHR_device_group = true,
+-      .KHR_draw_indirect_count = true,
++      .KHR_draw_indirect_count = pdev->info.has_draw_indirect_multi,
+       .KHR_driver_properties = true,
+       .KHR_dynamic_rendering = true,
+       .KHR_dynamic_rendering_local_read = true,
+@@ -847,7 +847,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .EXT_buffer_device_address = true,
+       .EXT_calibrated_timestamps = radv_calibrated_timestamps_enabled(pdev),
+       .EXT_color_write_enable = true,
+-      .EXT_conditional_rendering = true,
++      .EXT_conditional_rendering = pdev->info.has_set_predication,
+       .EXT_conservative_rasterization = pdev->info.gfx_level >= GFX9,
+       .EXT_custom_border_color = true,
+       .EXT_custom_resolve = true,
+@@ -959,7 +959,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+       .EXT_zero_initialize_device_memory = true,
+       .AMD_buffer_marker = true,
+       .AMD_device_coherent_memory = radv_device_coherent_memory_enabled(pdev),
+-      .AMD_draw_indirect_count = true,
++      .AMD_draw_indirect_count = pdev->info.has_draw_indirect_multi,
+       .AMD_gcn_shader = true,
+       .AMD_gpu_shader_half_float = pdev->info.compiler_info.has_packed_math_16bit,
+       .AMD_gpu_shader_int16 = pdev->info.compiler_info.has_packed_math_16bit,
+@@ -1078,7 +1078,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+ 
+       /* Vulkan 1.2 */
+       .samplerMirrorClampToEdge = true,
+-      .drawIndirectCount = true,
++      .drawIndirectCount = pdev->info.has_draw_indirect_multi,
+       .storageBuffer8BitAccess = true,
+       .uniformAndStorageBuffer8BitAccess = true,
+       .storagePushConstant8 = true,
+@@ -1172,7 +1172,7 @@ radv_physical_device_get_features(const struct radv_physical_device *pdev, struc
+       .pushDescriptor = true,
+ 
+       /* VK_EXT_conditional_rendering */
+-      .conditionalRendering = true,
++      .conditionalRendering = pdev->info.has_set_predication,
+       .inheritedConditionalRendering = false,
+ 
+       /* VK_KHR_vertex_attribute_divisor */
+@@ -2697,7 +2697,8 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
+ 
+    pdev->dcc_msaa_allowed = (instance->perftest_flags & RADV_PERFTEST_DCC_MSAA);
+ 
+-   pdev->use_fmask = pdev->info.compiler_info.has_fmask && !(instance->debug_flags & RADV_DEBUG_NO_FMASK);
++   pdev->use_fmask = pdev->info.compiler_info.has_fmask && pdev->info.has_cmask &&
++                     !(instance->debug_flags & RADV_DEBUG_NO_FMASK);
+ 
+    pdev->force_64_byte_sampled_image = !pdev->use_fmask && instance->drirc.debug.force_64_byte_sampled_image;
+ 
+diff --git a/src/amd/vulkan/radv_queue.c b/src/amd/vulkan/radv_queue.c
+index 93f71ec..56a8693 100644
+--- a/src/amd/vulkan/radv_queue.c
++++ b/src/amd/vulkan/radv_queue.c
+@@ -224,12 +224,11 @@ radv_queue_submit_empty(struct radv_queue *queue, struct vk_queue_submit *submis
+ }
+ 
+ static void
+-radv_set_ring_buffer(const struct radv_physical_device *pdev, struct radeon_winsys_bo *bo, uint32_t offset,
+-                     uint32_t ring_size, bool add_tid, bool swizzle_enable, bool oob_select_raw, uint32_t element_size,
+-                     uint32_t index_stride, uint32_t desc[4])
++radv_set_ring_buffer_va(const struct radv_physical_device *pdev, uint64_t va, uint32_t ring_size, bool add_tid,
++                        bool swizzle_enable, bool oob_select_raw, uint32_t element_size, uint32_t index_stride,
++                        uint32_t desc[4])
+ {
+    const uint8_t oob_select = oob_select_raw ? V_008F0C_OOB_SELECT_RAW : V_008F0C_OOB_SELECT_DISABLED;
+-   const uint64_t va = radv_buffer_get_va(bo) + offset;
+    const struct ac_buffer_state ac_state = {
+       .va = va,
+       .size = ring_size,
+@@ -252,6 +251,15 @@ radv_set_ring_buffer(const struct radv_physical_device *pdev, struct radeon_wins
+    ac_build_buffer_descriptor(pdev->info.gfx_level, &ac_state, desc);
+ }
+ 
++static void
++radv_set_ring_buffer(const struct radv_physical_device *pdev, struct radeon_winsys_bo *bo, uint32_t offset,
++                     uint32_t ring_size, bool add_tid, bool swizzle_enable, bool oob_select_raw, uint32_t element_size,
++                     uint32_t index_stride, uint32_t desc[4])
++{
++   radv_set_ring_buffer_va(pdev, radv_buffer_get_va(bo) + offset, ring_size, add_tid, swizzle_enable, oob_select_raw,
++                           element_size, index_stride, desc);
++}
++
+ static void
+ radv_fill_shader_rings(struct radv_device *device, uint32_t *desc, struct radeon_winsys_bo *scratch_bo,
+                        uint32_t esgs_ring_size, struct radeon_winsys_bo *esgs_ring_bo, uint32_t gsvs_ring_size,
+@@ -304,8 +312,13 @@ radv_fill_shader_rings(struct radv_device *device, uint32_t *desc, struct radeon
+    desc += 8;
+ 
+    if (tess_rings_bo) {
+-      radv_set_ring_buffer(pdev, tess_rings_bo, pdev->info.tess_offchip_ring_size, pdev->info.tess_factor_ring_size,
+-                           false, false, true, 0, 0, &desc[0]);
++      if (pdev->info.fixed_tess_factor_ring_va) {
++         radv_set_ring_buffer_va(pdev, pdev->info.fixed_tess_factor_ring_va, pdev->info.fixed_tess_factor_ring_size,
++                                 false, false, true, 0, 0, &desc[0]);
++      } else {
++         radv_set_ring_buffer(pdev, tess_rings_bo, pdev->info.tess_offchip_ring_size,
++                              pdev->info.tess_factor_ring_size, false, false, true, 0, 0, &desc[0]);
++      }
+ 
+       radv_set_ring_buffer(pdev, tess_rings_bo, 0, pdev->info.tess_offchip_ring_size, false, false, true, 0, 0,
+                            &desc[4]);
+@@ -1241,6 +1254,14 @@ radv_update_preambles(struct radv_queue_state *queue, struct radv_device *device
+       *has_follower |= !!cmd_buffer->gang.cs;
+    }
+ 
++   /* The VGT wraps the GS rings at the system's size, whatever RADV programs. */
++   if (pdev->info.fixed_gs_ring_size) {
++      if (needs.esgs_ring_size)
++         needs.esgs_ring_size = pdev->info.fixed_gs_ring_size;
++      if (needs.gsvs_ring_size)
++         needs.gsvs_ring_size = pdev->info.fixed_gs_ring_size;
++   }
++
+    /* Sanitize scratch size information. */
+    needs.scratch_waves =
+       needs.scratch_size_per_wave ? MIN2(needs.scratch_waves, UINT32_MAX / needs.scratch_size_per_wave) : 0;

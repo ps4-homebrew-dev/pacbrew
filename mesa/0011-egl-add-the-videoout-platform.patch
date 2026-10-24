@@ -1,94 +1,65 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 26a99af657a898821a3557063a7def70fda53424 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
-Date: Sat, 17 Oct 2026 21:14:06 +0000
-Subject: [PATCH 16/16] egl: a videoout platform, zink on the PS4's display
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 11/12] egl: add the videoout platform
 
--Dplatforms=videoout is EGL on the PlayStation 4's display (VideoOut),
-through zink on RADV (-Dradv-winsys=ps4), which shows VideoOut with
-VK_KHR_display. It is the console build's native platform
-(-Degl-native-platform=videoout), and needs neither DRM nor a window
-system; with it, gallium builds the DRI frontend for zink alone, as on
-macOS.
+-Dplatforms=videoout is EGL on the PS4's display, through zink on RADV
+presenting with VK_KHR_display. It needs neither DRM nor a window
+system: the display is the only window, and pbuffers are zink's own
+images.
 
-- eglGetDisplay(EGL_DEFAULT_DISPLAY) opens zink through kopper, with no
-  device node, on EGL's software device.
-- The display is the only window: any non-zero EGLNativeWindowType names
-  it, and window surfaces made from the same value share zink's
-  swapchain. A window surface is the size of the display's mode
-  (kopperQueryDisplayExtent), and kopper presents it to a display surface.
-- Pbuffers are zink's own images, as on the surfaceless platform.
-- Window configs are the formats VideoOut scans out, B8G8R8A8 and
-  B8G8R8X8, linear or sRGB; every pbuffer visual is a pbuffer config.
-- FIFO is the one present mode, so the swap interval is 0 or 1, and 0 is
-  shown as 1. EGL_EXT_buffer_age and EGL_EXT_swap_buffers_with_damage are
-  offered.
-
-The build: the DRI frontend's dri2.c, which holds EGL's image and fence
-entry points, is built for the platform as for macOS; System V shared
-memory is used only where its calls exist, which the PS4's libc lacks; and
-egl.pc and glesv2.pc hand the program RADV's system modules to link, as
-vulkan.pc does, so that its crt initializes them.
-
-A Linux build of the PS4 winsys's host model can build the platform too,
-and runs the whole path, EGL to the VideoOut WSI's stand-ins, on a PC.
+PS4 modules can't use each other's TLS variables, so the current
+dispatch and context are read through calls, as on Windows.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_017iduBr5J43VcTC99HLCEQm
 ---
- meson.build                              |  31 +-
- meson.options                            |   7 +-
+ meson.build                              |  12 +-
+ meson.options                            |   3 +-
  src/egl/drivers/dri2/egl_dri2.c          |   5 +
  src/egl/drivers/dri2/egl_dri2.h          |  11 +
- src/egl/drivers/dri2/platform_videoout.c | 344 +++++++++++++++++++++++
+ src/egl/drivers/dri2/platform_videoout.c | 323 +++++++++++++++++++++++
  src/egl/main/egldisplay.c                |   1 +
  src/egl/main/egldisplay.h                |   1 +
  src/egl/meson.build                      |   3 +
- 8 files changed, 397 insertions(+), 6 deletions(-)
+ src/gallium/meson.build                  |   7 +
+ src/gallium/targets/dri/dri.sym.in       |   5 +-
+ src/mesa/glapi/glapi/glapi.h             |   3 +-
+ 11 files changed, 367 insertions(+), 7 deletions(-)
  create mode 100644 src/egl/drivers/dri2/platform_videoout.c
 
 diff --git a/meson.build b/meson.build
-index 8885d8c..5b16cc1 100644
+index 1926c71..9b4f72f 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -371,7 +371,9 @@ with_vdrm = [
+@@ -372,7 +372,7 @@ with_vdrm = [
  ].contains(true)
  
  with_dri = false
 -if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin')))
-+# The PS4's display (videoout) is reached by zink alone, through VK_KHR_display,
-+# with no DRM device behind it.
-+if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin' or get_option('platforms').contains('videoout'))))
++if with_gallium and (system_has_kms_drm or (with_gallium_zink and (freedreno_kmds.contains('kgsl') or host_machine.system() == 'darwin' or with_radv_ps4)))
    _glx = get_option('glx')
    _egl = get_option('egl')
    if _glx == 'dri' or _egl.enabled() or (_glx == 'disabled' and _egl.allowed())
-@@ -497,6 +499,7 @@ with_platform_wayland = _platforms.contains('wayland')
+@@ -498,6 +498,7 @@ with_platform_wayland = _platforms.contains('wayland')
  with_platform_haiku = _platforms.contains('haiku')
  with_platform_windows = _platforms.contains('windows')
  with_platform_macos = _platforms.contains('macos')
 +with_platform_videoout = _platforms.contains('videoout')
  
- # RADV on the PlayStation 4: no DRM device, no libdrm, a winsys of its own
- # (src/amd/vulkan/winsys/ps4). AMD_NO_DRM marks the code the Windows port
-@@ -521,6 +524,18 @@ ps4_sysmodule_libs = with_radv_ps4_console ? ['-lSceGnmDriver', '-lSceVideoOut']
- # is libvulkan.so.1 there and exports the Vulkan API itself.
- with_zink_link_radv = with_gallium_zink and with_radv_ps4_console
+ amd_no_drm = with_platform_windows or with_radv_ps4
+ if amd_no_drm
+@@ -507,6 +508,10 @@ endif
+ # them to programs so that their crt initializes them.
+ ps4_sysmodule_libs = with_radv_ps4 ? ['-lSceGnmDriver', '-lSceVideoOut'] : []
  
-+# OpenGL on the PS4: zink on RADV, presenting through RADV's VK_KHR_display
-+# (VideoOut). EGL's videoout platform hands zink a display surface; there is
-+# no window system and no DRM device.
-+if with_platform_videoout
-+  if not with_gallium_zink
-+    error('The videoout platform is drawn to by zink: add zink to -Dgallium-drivers')
-+  endif
-+  if not with_radv_ps4
-+    error('The videoout platform presents through RADV\'s VideoOut WSI: -Dvulkan-drivers=amd -Dradv-winsys=ps4')
-+  endif
++if with_platform_videoout and not (with_gallium_zink and with_radv_ps4)
++  error('The videoout platform needs -Dgallium-drivers=zink -Dvulkan-drivers=amd -Dradv-winsys=ps4')
 +endif
 +
  with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
  if with_gfxstream_emulated_android
    # When building the android_stub with a non-Bionic sysroot/target, we to have
-@@ -608,7 +623,7 @@ if with_egl
+@@ -594,7 +599,7 @@ if with_egl
    endif
  
    # All the other platforms can be detected and cannot reach the native platform code
@@ -97,58 +68,36 @@ index 8885d8c..5b16cc1 100644
  
    # Don't enforce the native platform if none of the undetectable platforms are enabled
    _undetectable_platforms_enabled = []
-@@ -730,7 +745,9 @@ if with_vulkan_icd_dir == ''
+@@ -716,7 +721,7 @@ if with_vulkan_icd_dir == ''
    with_vulkan_icd_dir = join_paths(get_option('datadir'), 'vulkan/icd.d')
  endif
  
 -with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or with_dri_platform == 'apple' or  with_dri_platform == 'pseudo-drm')
-+# EGL's image and fence entry points are in the DRI frontend's dri2.c, which
-+# the videoout platform (zink on the PS4, without DRM) needs as macOS does.
 +with_dri2 = (with_dri or with_any_vk) and (with_dri_platform == 'drm' or with_dri_platform == 'apple' or  with_dri_platform == 'pseudo-drm' or with_platform_videoout)
  
  if with_dri
    if with_glx == 'disabled' and not with_egl and not with_gbm
-@@ -1647,7 +1664,8 @@ endif
- foreach h : ['xlocale.h', 'linux/futex.h', 'endian.h', 'dlfcn.h', 'sys/shm.h',
-              'cet.h', 'pthread_np.h', 'poll.h', 'sys/inotify.h',
-              'linux/udmabuf.h']
--  if cc.check_header(h)
-+  # The PS4's libc has the System V shared memory header, but not the calls.
-+  if cc.check_header(h) and (h != 'sys/shm.h' or cc.has_function('shmget', prefix : '#include <sys/shm.h>'))
-     pre_args += '-DHAVE_@0@'.format(h.to_upper().underscorify())
-   endif
- endforeach
-@@ -2513,6 +2531,11 @@ endif
+@@ -2499,6 +2504,7 @@ endif
  if dep_dl.found()
    gl_priv_libs += '-ldl'
  endif
-+# EGL and GL reach the PS4's GPU through RADV, whose system modules the
-+# program's crt initializes, as vulkan.pc has it link them.
-+if with_platform_videoout
-+  gl_priv_libs += ps4_sysmodule_libs
-+endif
++gl_priv_libs += ps4_sysmodule_libs
  
  # FIXME: autotools lists this as incomplete
  gbm_priv_libs = []
 diff --git a/meson.options b/meson.options
-index 9f84266..109c3de 100644
+index 27c6dd5..0a6ef96 100644
 --- a/meson.options
 +++ b/meson.options
-@@ -13,9 +13,12 @@ option(
+@@ -13,6 +13,7 @@ option(
    value : ['auto'],
    choices : [
      'auto', 'x11', 'wayland', 'haiku', 'android', 'windows', 'macos',
 +    'videoout',
    ],
    description : 'window systems to support. If this is set to `auto`, all ' +
--                'platforms applicable will be enabled.'
-+                'platforms applicable will be enabled. videoout is the ' +
-+                'PlayStation 4\'s display, reached through VK_KHR_display ' +
-+                '(-Dradv-winsys=ps4) by zink.'
- )
- 
- option(
-@@ -23,7 +26,7 @@ option(
+                 'platforms applicable will be enabled.'
+@@ -23,7 +24,7 @@ option(
    type : 'combo',
    value : 'auto',
    choices : [
@@ -204,32 +153,22 @@ index aa5692a..14d3fc9 100644
  dri2_initialize_android(_EGLDisplay *disp);
 diff --git a/src/egl/drivers/dri2/platform_videoout.c b/src/egl/drivers/dri2/platform_videoout.c
 new file mode 100644
-index 0000000..dfbb368
+index 0000000..2c39c77
 --- /dev/null
 +++ b/src/egl/drivers/dri2/platform_videoout.c
-@@ -0,0 +1,344 @@
+@@ -0,0 +1,323 @@
 +/*
 + * Copyright © 2026 John Törnblom
 + * SPDX-License-Identifier: MIT
 + */
 +
 +/*
-+ * EGL on the PlayStation 4's display (VideoOut).
++ * EGL on the PS4's display: zink on RADV, presenting through kopper to a
++ * VK_KHR_display surface (wsi_common_videoout.c).
 + *
-+ * The console has no window system, no DRM device and no GPU driver Mesa's
-+ * gallium drivers can talk to, but RADV runs there, and its VK_KHR_display
-+ * shows VideoOut's one display (wsi_common_videoout.c). This platform is zink
-+ * on that RADV, presenting through kopper to a display surface:
-+ *
-+ * - the display is EGL_DEFAULT_DISPLAY: this is the native platform of the
-+ *   console build;
-+ * - the display is the only window. Any non-zero EGLNativeWindowType names
-+ *   it; window surfaces made from the same value share zink's swapchain, as
-+ *   an X11 window's do. A window surface is the size of the display's mode,
-+ *   and presents FIFO, with swap interval 1;
-+ * - pbuffers are zink's own images, as on the surfaceless platform;
-+ * - window configs are those VideoOut scans out, B8G8R8A8 (and its sRGB
-+ *   view); every pbuffer visual is offered as a pbuffer.
++ * The display is the only window: any non-zero EGLNativeWindowType names it,
++ * and window surfaces with the same value share a swapchain. Pbuffers are
++ * zink's own images, as on the surfaceless platform.
 + */
 +
 +#include <assert.h>
@@ -247,14 +186,13 @@ index 0000000..dfbb368
 +#include "dri_screen.h"
 +#include "dri_util.h"
 +
-+/* The display this platform shows: VK_KHR_display's first. */
 +#define VIDEOOUT_DISPLAY_INDEX 0
 +
 +static_assert(sizeof(struct kopper_display_surface_create_info) <=
 +                 sizeof(struct kopper_vk_surface_create_storage),
 +              "kopper's storage holds a display surface");
 +
-+/* The formats VideoOut scans out, which window configs are made of. */
++/* The formats VideoOut scans out. */
 +static const enum pipe_format videoout_window_formats[] = {
 +   PIPE_FORMAT_BGRA8888_UNORM,
 +   PIPE_FORMAT_BGRX8888_UNORM,
@@ -272,14 +210,11 @@ index 0000000..dfbb368
 +   return false;
 +}
 +
-+/* --- Kopper's loader ---------------------------------------------------- */
-+
 +static void
 +videoout_kopper_set_surface_create_info(void *draw, struct kopper_loader_info *out)
 +{
 +   struct dri2_egl_surface *dri2_surf = draw;
 +
-+   /* A pbuffer is no window: kopper gives it zink's own images. */
 +   if (dri2_surf->base.Type != EGL_WINDOW_BIT)
 +      return;
 +
@@ -317,8 +252,6 @@ index 0000000..dfbb368
 +   NULL,
 +};
 +
-+/* --- Surfaces ----------------------------------------------------------- */
-+
 +static _EGLSurface *
 +videoout_create_surface(_EGLDisplay *disp, EGLint type, _EGLConfig *conf,
 +                        void *native_window, const EGLint *attrib_list)
@@ -347,7 +280,6 @@ index 0000000..dfbb368
 +   }
 +
 +   if (type == EGL_WINDOW_BIT) {
-+      /* The window is the display, at the size of its mode. */
 +      int width, height;
 +      if (!kopperQueryDisplayExtent(dri2_dpy->dri_screen_render_gpu,
 +                                    VIDEOOUT_DISPLAY_INDEX, &width, &height)) {
@@ -462,16 +394,13 @@ index 0000000..dfbb368
 +   .get_dri_drawable = dri2_surface_get_dri_drawable,
 +};
 +
-+/* --- The display -------------------------------------------------------- */
-+
 +static void
 +videoout_add_configs(_EGLDisplay *disp)
 +{
 +   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 +   unsigned window_configs = 0;
 +
-+   /* Window configs first: a pbuffer config that matches one is the same
-+    * config, which then serves both. */
++   /* Window configs first, so that matching pbuffer configs are merged into them. */
 +   for (unsigned pass = 0; pass < 2; pass++) {
 +      for (unsigned i = 0; dri2_dpy->driver_configs[i] != NULL; i++) {
 +         const struct gl_config *gl_config =
@@ -500,7 +429,6 @@ index 0000000..dfbb368
 +   struct dri2_egl_display *dri2_dpy = dri2_egl_display(disp);
 +   const char *err;
 +
-+   /* No device node: zink finds RADV through Vulkan. */
 +   dri2_dpy->fd_render_gpu = -1;
 +   dri2_dpy->fd_display_gpu = -1;
 +
@@ -534,7 +462,7 @@ index 0000000..dfbb368
 +   }
 +
 +   dri2_setup_screen(disp);
-+   /* FIFO is what VideoOut presents with: an interval of 0 is shown as 1. */
++   /* FIFO only. */
 +   dri2_setup_swap_interval(disp, 1);
 +
 +   disp->Extensions.EXT_buffer_age = EGL_TRUE;
@@ -590,3 +518,56 @@ index 4e62ee4..fd4a1c4 100644
    if with_platform_android
      deps_for_egl += [dep_android, idep_u_gralloc]
      files_egl += files('drivers/dri2/platform_android.c')
+diff --git a/src/gallium/meson.build b/src/gallium/meson.build
+index 67011f5..9ba9d27 100644
+--- a/src/gallium/meson.build
++++ b/src/gallium/meson.build
+@@ -22,6 +22,13 @@ else
+   sym_config.set('va_driver_init', '')
+ endif
+ 
++# The PS4 can't share TLS variables between modules (see glapi.h).
++if cc.get_define('__ORBIS__') != ''
++  sym_config.set('mesa_glapi_tls_exports', '')
++else
++  sym_config.set('mesa_glapi_tls_exports', '_mesa_glapi_tls_Context; _mesa_glapi_tls_Dispatch;')
++endif
++
+ inc_gallium_drivers = include_directories('drivers')
+ inc_gallium_winsys = include_directories('winsys')
+ inc_gallium_winsys_sw = include_directories('winsys/sw')
+diff --git a/src/gallium/targets/dri/dri.sym.in b/src/gallium/targets/dri/dri.sym.in
+index d987668..101922b 100644
+--- a/src/gallium/targets/dri/dri.sym.in
++++ b/src/gallium/targets/dri/dri.sym.in
+@@ -1,13 +1,14 @@
+ {
+ 	global:
+                 # shared-glapi exported from libgallium:
++                _mesa_glapi_get_context;
++                _mesa_glapi_get_dispatch;
+                 _mesa_glapi_get_dispatch_table_size;
+                 _mesa_glapi_get_proc_address;
+                 _mesa_glapi_get_proc_offset;
+                 _mesa_glapi_set_context;
+                 _mesa_glapi_set_dispatch;
+-                _mesa_glapi_tls_Context;
+-                _mesa_glapi_tls_Dispatch;
++                @mesa_glapi_tls_exports@
+ 
+ 		ddebug_screen_create;
+ 		noop_screen_create;
+diff --git a/src/mesa/glapi/glapi/glapi.h b/src/mesa/glapi/glapi/glapi.h
+index 14575cc..2d57575 100644
+--- a/src/mesa/glapi/glapi/glapi.h
++++ b/src/mesa/glapi/glapi/glapi.h
+@@ -72,7 +72,8 @@ struct _glapi_table;
+ _GLAPI_EXPORT extern __THREAD_INITIAL_EXEC struct _glapi_table * _mesa_glapi_tls_Dispatch;
+ _GLAPI_EXPORT extern __THREAD_INITIAL_EXEC void * _mesa_glapi_tls_Context;
+ 
+-#if DETECT_OS_WINDOWS && !defined(MAPI_MODE_SHARED_GLAPI)
++/* Like Windows DLLs, PS4 modules can't use each other's TLS variables. */
++#if (DETECT_OS_WINDOWS && !defined(MAPI_MODE_SHARED_GLAPI)) || defined(__ORBIS__)
+ # define GET_DISPATCH() _mesa_glapi_get_dispatch()
+ # define GET_CURRENT_CONTEXT(C)  struct gl_context *C = (struct gl_context *) _mesa_glapi_get_context()
+ #else

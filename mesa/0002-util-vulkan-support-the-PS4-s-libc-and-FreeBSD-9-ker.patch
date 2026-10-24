@@ -1,41 +1,37 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From f625a8d087ed58fc136ecbde89838a709bad527c Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
-Date: Sat, 17 Oct 2026 15:34:58 +0000
-Subject: [PATCH 02/13] util, vulkan: the PS4's FreeBSD 9 kernel and its libc
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 02/12] util, vulkan: support the PS4's libc and FreeBSD 9
+ kernel
 
-- futex: the PS4 runs FreeBSD 9's kernel, whose UMTX_OP_WAIT_UINT takes a
-  relative struct timespec (struct _umtx_time came with FreeBSD 10).
-  futex_wait() converts the absolute CLOCK_MONOTONIC timeout for it and,
-  as on Linux, fails with -1 and errno.
-- os_file: there is no kinfo_file for os_same_file_description.
-- memstream: the PS4's libc has no open_memstream. Detect it
-  (HAVE_OPEN_MEMSTREAM) and, where it is missing, back u_memstream with
-  tmpfile() as on Windows. The RADV hang report goes through u_memstream,
-  and ac_get_umr_waves, which needs umr anyway, is left out.
-- vk_device: FreeBSD's CLOCK_MONOTONIC_FAST is not CLOCK_MONOTONIC_RAW but
-  CLOCK_MONOTONIC at tick granularity, which reads behind a precise
-  reading taken before it; without CLOCK_MONOTONIC_RAW the raw time
-  domain is not offered.
+- futex: FreeBSD 9's UMTX_OP_WAIT_UINT takes a relative timeout.
+- os_file: there is no kinfo_file.
+- memstream: there is no open_memstream; use a temporary file, as on
+  Windows, and use u_memstream for RADV's hang reports.
+- vk_device: the PS4's CLOCK_MONOTONIC_FAST is too coarse for the raw
+  time domain.
+- radv: don't crash on pipeline representations that could not be
+  captured.
 
 Co-authored-by: Mihawk <163614687+mihawk-99@users.noreply.github.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
 ---
  meson.build                            |  1 +
  src/amd/common/ac_debug.c              |  2 +-
- src/amd/vulkan/tools/radv_debug_hang.c |  9 +++++--
- src/util/futex.c                       | 33 ++++++++++++++++++++++++++
- src/util/memstream.c                   | 26 ++++++++++++++++----
- src/util/memstream.h                   | 10 +++++++-
+ src/amd/vulkan/radv_pipeline.c         |  4 ++++
+ src/amd/vulkan/tools/radv_debug_hang.c |  9 ++++++--
+ src/util/futex.c                       | 31 ++++++++++++++++++++++++++
+ src/util/memstream.c                   | 25 ++++++++++++++++-----
+ src/util/memstream.h                   |  9 +++++++-
  src/util/os_file.c                     |  4 ++--
- src/vulkan/runtime/vk_device.c         | 10 ++++----
- 8 files changed, 80 insertions(+), 15 deletions(-)
+ src/vulkan/runtime/vk_device.c         |  2 +-
+ 9 files changed, 75 insertions(+), 12 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index 104ca03..65c8063 100644
+index d912730..1926c71 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -1642,6 +1642,7 @@ foreach h : ['xlocale.h', 'linux/futex.h', 'endian.h', 'dlfcn.h', 'sys/shm.h',
+@@ -1639,6 +1639,7 @@ foreach h : ['xlocale.h', 'linux/futex.h', 'endian.h', 'dlfcn.h', 'sys/shm.h',
  endforeach
  
  functions_to_detect = {
@@ -56,6 +52,21 @@ index 835cc9c..eaf38af 100644
     char *data;
     size_t size;
     FILE *f = open_memstream(&data, &size);
+diff --git a/src/amd/vulkan/radv_pipeline.c b/src/amd/vulkan/radv_pipeline.c
+index 6e48fa1..a2e9fb7 100644
+--- a/src/amd/vulkan/radv_pipeline.c
++++ b/src/amd/vulkan/radv_pipeline.c
+@@ -1000,6 +1000,10 @@ radv_GetPipelineExecutableStatisticsKHR(VkDevice _device, const VkPipelineExecut
+ static VkResult
+ radv_copy_representation(void *data, size_t *data_size, const char *src)
+ {
++   /* NULL when the representation couldn't be captured (no memstream). */
++   if (!src)
++      src = "";
++
+    size_t total_size = strlen(src) + 1;
+ 
+    if (!data) {
 diff --git a/src/amd/vulkan/tools/radv_debug_hang.c b/src/amd/vulkan/tools/radv_debug_hang.c
 index 9005bdd..318392f 100644
 --- a/src/amd/vulkan/tools/radv_debug_hang.c
@@ -96,7 +107,7 @@ index 9005bdd..318392f 100644
  
     free(dump_dir);
 diff --git a/src/util/futex.c b/src/util/futex.c
-index df3e949..c1bf144 100644
+index df3e949..ccb5871 100644
 --- a/src/util/futex.c
 +++ b/src/util/futex.c
 @@ -63,6 +63,7 @@ int futex_wait(uint32_t *addr, int32_t value, const struct timespec *timeout)
@@ -107,15 +118,13 @@ index df3e949..c1bf144 100644
  
  int futex_wake(uint32_t *addr, int32_t count)
  {
-@@ -70,6 +71,36 @@ int futex_wake(uint32_t *addr, int32_t count)
+@@ -70,6 +71,34 @@ int futex_wake(uint32_t *addr, int32_t count)
     return _umtx_op(addr, UMTX_OP_WAKE, (uint32_t)count, NULL, NULL) == -1 ? errno : 0;
  }
  
 +#if defined(__ORBIS__)
 +
-+/* The PS4's kernel is FreeBSD 9's, whose UMTX_OP_WAIT_UINT takes a relative
-+ * timeout as a struct timespec (struct _umtx_time came with FreeBSD 10).
-+ * Like Linux's, it fails with -1 and errno, as the callers expect. */
++/* The PS4 runs a FreeBSD 9 kernel, whose UMTX_OP_WAIT_UINT takes a relative timeout. */
 +int futex_wait(uint32_t *addr, int32_t value, const struct timespec *timeout)
 +{
 +   struct timespec relative, now;
@@ -144,7 +153,7 @@ index df3e949..c1bf144 100644
  int futex_wait(uint32_t *addr, int32_t value, const struct timespec *timeout)
  {
     void *uaddr = NULL, *uaddr2 = NULL;
-@@ -89,6 +120,8 @@ int futex_wait(uint32_t *addr, int32_t value, const struct timespec *timeout)
+@@ -89,6 +118,8 @@ int futex_wait(uint32_t *addr, int32_t value, const struct timespec *timeout)
     return _umtx_op(addr, UMTX_OP_WAIT_UINT, (uint32_t)value, uaddr, uaddr2) == -1 ? errno : 0;
  }
  
@@ -154,7 +163,7 @@ index df3e949..c1bf144 100644
  
  #include <sys/futex.h>
 diff --git a/src/util/memstream.c b/src/util/memstream.c
-index bd909b7..743b4be 100644
+index bd909b7..dbcb88f 100644
 --- a/src/util/memstream.c
 +++ b/src/util/memstream.c
 @@ -63,6 +63,17 @@ u_memstream_open(struct u_memstream *mem, char **bufp, size_t *sizep)
@@ -184,12 +193,11 @@ index bd909b7..743b4be 100644
  static void
  u_memstream_update_buffer(struct u_memstream *mem)
  {
-@@ -84,18 +95,23 @@ u_memstream_update_buffer(struct u_memstream *mem)
+@@ -84,18 +95,22 @@ u_memstream_update_buffer(struct u_memstream *mem)
        fseek(f, 0, SEEK_SET);
        fread(*mem->bufp, 1, size, f);
        (*mem->bufp)[size] = '\0';
 +   } else if (*mem->bufp == NULL) {
-+      /* As open_memstream, an empty stream is an empty string. */
 +      *mem->bufp = calloc(1, 1);
     }
     *mem->sizep = size;
@@ -210,7 +218,7 @@ index bd909b7..743b4be 100644
     remove(mem->temp);
  #endif
  
-@@ -105,10 +121,10 @@ u_memstream_close(struct u_memstream *mem)
+@@ -105,10 +120,10 @@ u_memstream_close(struct u_memstream *mem)
  int
  u_memstream_flush(struct u_memstream *mem)
  {
@@ -224,15 +232,14 @@ index bd909b7..743b4be 100644
 +#endif /* U_MEMSTREAM_TMPFILE */
  }
 diff --git a/src/util/memstream.h b/src/util/memstream.h
-index 42f374c..9a9d70e 100644
+index 42f374c..2231dbf 100644
 --- a/src/util/memstream.h
 +++ b/src/util/memstream.h
-@@ -43,12 +43,20 @@
+@@ -43,12 +43,19 @@
  extern "C" {
  #endif
  
-+/* Without open_memstream (Windows, the PlayStation 4's libc), the stream is a
-+ * temporary file, read back into the buffer at flush and close. */
++/* Without open_memstream, the stream is a temporary file. */
 +#if defined(_WIN32) || !defined(HAVE_OPEN_MEMSTREAM)
 +#define U_MEMSTREAM_TMPFILE 1
 +#endif
@@ -272,26 +279,15 @@ index 7d99383..ab45fcc 100644
     size_t len;
     if (sysctl(mib, ARRAY_SIZE(mib), NULL, &len, NULL, 0))
 diff --git a/src/vulkan/runtime/vk_device.c b/src/vulkan/runtime/vk_device.c
-index 1b422dc..67cc61c 100644
+index 1b422dc..9c52ed8 100644
 --- a/src/vulkan/runtime/vk_device.c
 +++ b/src/vulkan/runtime/vk_device.c
-@@ -877,13 +877,15 @@ vk_device_get_timestamp(struct vk_device *device, VkTimeDomainKHR domain,
-       clockid = CLOCK_MONOTONIC;
-       break;
-    case VK_TIME_DOMAIN_CLOCK_MONOTONIC_RAW_KHR:
--      /* The "RAW" clocks on Linux are called "FAST" on FreeBSD */
-+      /* The domain is defined as clock_gettime(CLOCK_MONOTONIC_RAW). FreeBSD's
-+       * CLOCK_MONOTONIC_FAST is not that clock but CLOCK_MONOTONIC at tick
-+       * granularity, which reads behind a precise reading taken before it (a
-+       * FreeBSD-based console: dEQP-VK.pipeline.*.timestamp.calibrated.
-+       * host_domain_test), so without CLOCK_MONOTONIC_RAW the domain is not
-+       * offered. */
+@@ -881,7 +881,7 @@ vk_device_get_timestamp(struct vk_device *device, VkTimeDomainKHR domain,
  #if defined(CLOCK_MONOTONIC_RAW)
        clockid = CLOCK_MONOTONIC_RAW;
        break;
 -#elif defined(CLOCK_MONOTONIC_FAST)
--      clockid = CLOCK_MONOTONIC_FAST;
--      break;
++#elif defined(CLOCK_MONOTONIC_FAST) && !defined(__ORBIS__) /* the PS4's is too coarse */
+       clockid = CLOCK_MONOTONIC_FAST;
+       break;
  #else
-       FALLTHROUGH;
- #endif

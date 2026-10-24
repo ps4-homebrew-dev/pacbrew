@@ -1,28 +1,25 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 52a6ac77ebf7ed2b639789d03d8f4410b33660ad Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
-Date: Sat, 17 Oct 2026 15:34:58 +0000
-Subject: [PATCH 01/13] meson, amd: a radv-winsys option, and AMD builds
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 01/12] build: add -Dradv-winsys=ps4, and build the AMD code
  without DRM
 
--Dradv-winsys selects the kernel interface RADV allocates memory and
-submits through: amdgpu (Linux DRM, the default) or ps4 (the PlayStation
-4's Gnm driver, which a later patch adds).
+-Dradv-winsys selects the kernel interface RADV uses: amdgpu (the
+default) or ps4, the PlayStation 4's Gnm driver, added later in this
+series. The PS4 has neither DRM nor libdrm, so AMD_NO_DRM keeps the AMD
+code away from DRM the way the Windows build does, and headless
+swapchains use CPU images without libdrm.
 
-The PS4 has no DRM and its libc no libdrm, so the ps4 console build does
-not look for either. AMD_NO_DRM marks the code the Windows port already
-keeps away from DRM -- the DRM fourcc and tiling definitions, the
-drmGetCap/drmGetDevice2 stubs in ac_gpu_info.c, ac_linux_drm.c, the DRM
-node bookkeeping of the physical device, the umr ring dump -- and
-headless swapchains use CPU images without libdrm. A Linux host build of
-the PS4 winsys keeps DRM for the rest of Mesa.
+The PS4's Jaguar CPU has no AVX2, so AddrLib's SIMD swizzlers are left
+out there.
 
 Co-authored-by: Mihawk <163614687+mihawk-99@users.noreply.github.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
 ---
- meson.build                            | 24 +++++++++++++++++++++++-
- meson.options                          | 10 ++++++++++
- src/amd/common/ac_drm_fourcc.h         |  9 +++++++--
+ meson.build                            | 21 ++++++++++++++++++++-
+ meson.options                          |  9 +++++++++
+ src/amd/addrlib/meson.build            |  3 ++-
+ src/amd/common/ac_drm_fourcc.h         |  2 +-
  src/amd/common/ac_gpu_info.c           |  7 ++++++-
  src/amd/common/ac_linux_drm.h          | 10 +++++-----
  src/amd/common/ac_surface.c            |  2 +-
@@ -30,50 +27,47 @@ Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
  src/amd/vulkan/radv_physical_device.c  | 12 ++++++------
  src/amd/vulkan/radv_physical_device.h  |  4 ++--
  src/amd/vulkan/tools/radv_debug_hang.c |  2 +-
- src/vulkan/wsi/wsi_common_headless.c   |  8 ++++++++
- 11 files changed, 70 insertions(+), 20 deletions(-)
+ src/vulkan/wsi/wsi_common_headless.c   |  6 +++++-
+ 12 files changed, 59 insertions(+), 21 deletions(-)
 
 diff --git a/meson.build b/meson.build
-index d6e3a8b..104ca03 100644
+index d6e3a8b..d912730 100644
 --- a/meson.build
 +++ b/meson.build
-@@ -339,6 +339,13 @@ if freedreno_kmds.length() != 0 and freedreno_kmds != [ 'msm' ] and with_freedre
+@@ -339,6 +339,17 @@ if freedreno_kmds.length() != 0 and freedreno_kmds != [ 'msm' ] and with_freedre
    endif
  endif
  
-+# RADV on the PlayStation 4 reaches the GPU through Gnm, beside a FreeBSD-based
-+# libc that has no DRM, so nothing may look for libdrm there. (A Linux host
-+# build of the same winsys keeps DRM for the rest of Mesa.)
-+if _vulkan_drivers.contains('amd') and get_option('radv-winsys') == 'ps4' and host_machine.system() != 'linux'
++# RADV on the PlayStation 4 (-Dradv-winsys=ps4) talks to Gnm: there is no DRM,
++# and the display is VideoOut (wsi_common_videoout.c).
++with_radv_ps4 = with_amd_vk and get_option('radv-winsys') == 'ps4'
++if with_radv_ps4
++  if cc.get_define('__ORBIS__') == ''
++    error('-Dradv-winsys=ps4 is only supported when building for the PS4')
++  endif
 +  system_has_kms_drm = false
++  pre_args += '-DRADV_PS4'
 +endif
 +
  # This has to be below the freedreno_kmds check since that can change system_has_kms_drm
  with_gallium_kmsro = with_gallium_drm or (system_has_kms_drm and with_gallium_zink)
  
-@@ -488,6 +495,21 @@ with_platform_haiku = _platforms.contains('haiku')
+@@ -488,6 +499,14 @@ with_platform_haiku = _platforms.contains('haiku')
  with_platform_windows = _platforms.contains('windows')
  with_platform_macos = _platforms.contains('macos')
  
-+# RADV on the PlayStation 4: no DRM device, no libdrm, a winsys of its own
-+# (src/amd/vulkan/winsys/ps4). AMD_NO_DRM marks the code the Windows port
-+# already keeps away from DRM, which the PS4 build has to skip the same way.
-+with_radv_ps4 = with_amd_vk and get_option('radv-winsys') == 'ps4'
 +amd_no_drm = with_platform_windows or with_radv_ps4
 +if amd_no_drm
 +  pre_args += '-DAMD_NO_DRM'
 +endif
-+if with_radv_ps4
-+  pre_args += '-DRADV_PS4'
-+endif
-+# The console build, as opposed to a Linux host build of the PS4 winsys, which
-+# models the console on a PC.
-+with_radv_ps4_console = with_radv_ps4 and host_machine.system() != 'linux'
++# The system modules RADV calls: libvulkan links them, and the .pc files hand
++# them to programs so that their crt initializes them.
++ps4_sysmodule_libs = with_radv_ps4 ? ['-lSceGnmDriver', '-lSceVideoOut'] : []
 +
  with_gfxstream_emulated_android = with_gfxstream_vk and with_platform_android and host_machine.system() == 'linux'
  if with_gfxstream_emulated_android
    # When building the android_stub with a non-Bionic sysroot/target, we to have
-@@ -1897,7 +1919,7 @@ _drm_ver = '2.4.109'
+@@ -1897,7 +1916,7 @@ _drm_ver = '2.4.109'
  
  _libdrm_checks = [
    ['intel', with_gallium_i915],
@@ -83,10 +77,10 @@ index d6e3a8b..104ca03 100644
  
  # Loop over the enables versions and get the highest libdrm requirement for all
 diff --git a/meson.options b/meson.options
-index 93a60e3..9f84266 100644
+index 93a60e3..27c6dd5 100644
 --- a/meson.options
 +++ b/meson.options
-@@ -751,6 +751,16 @@ option(
+@@ -751,6 +751,15 @@ option(
    description : 'build gallium d3d12 with graphics pipeline support.',
  )
  
@@ -95,40 +89,40 @@ index 93a60e3..9f84266 100644
 +  type : 'combo',
 +  value : 'amdgpu',
 +  choices : ['amdgpu', 'ps4'],
-+  description : 'The kernel interface RADV allocates memory and submits ' +
-+                'through: amdgpu (Linux DRM) or ps4 (the PlayStation 4 ' +
-+                'Gnm driver, reached through its exported functions).'
++  description : 'The kernel interface RADV uses: amdgpu (Linux DRM) or ps4 ' +
++                '(the PlayStation 4\'s Gnm driver).'
 +)
 +
  option(
    'radv-build-id',
    type : 'string',
+diff --git a/src/amd/addrlib/meson.build b/src/amd/addrlib/meson.build
+index 4f673b4..922c6cf 100644
+--- a/src/amd/addrlib/meson.build
++++ b/src/amd/addrlib/meson.build
+@@ -49,7 +49,8 @@ files_addrlib = files(
+ )
+ 
+ # Skip the addrlib definition of ADDR_FASTCALL so as not to use regparm.
+-cpp_args_addrlib = ['-DADDR_FASTCALL=', '-DADDR_ALLOW_SIMD=1']
++# The PS4's Jaguar CPU has no AVX2, and its compiler rejects the AVX2 swizzlers.
++cpp_args_addrlib = ['-DADDR_FASTCALL=', '-DADDR_ALLOW_SIMD=@0@'.format(with_radv_ps4 ? 0 : 1)]
+ 
+ if host_machine.endian() == 'little'
+   cpp_args_addrlib += '-DLITTLEENDIAN_CPU'
 diff --git a/src/amd/common/ac_drm_fourcc.h b/src/amd/common/ac_drm_fourcc.h
-index 9ef1406..7367885 100644
+index 9ef1406..082b5ae 100644
 --- a/src/amd/common/ac_drm_fourcc.h
 +++ b/src/amd/common/ac_drm_fourcc.h
-@@ -7,14 +7,19 @@
+@@ -7,7 +7,7 @@
  #ifndef AC_DRM_FOURCC_H
  #define AC_DRM_FOURCC_H
  
 -#ifdef _WIN32
 +#if defined(_WIN32) || defined(AMD_NO_DRM)
  #include <stdint.h>
-+/* Linux headers define __u64; elsewhere it is this. */
-+#if defined(__linux__)
-+#include <linux/types.h>
-+#else
  typedef uint64_t __u64;
-+#endif
  #define DRM_FORMAT_MOD_VENDOR_NONE    0
- #define DRM_FORMAT_MOD_VENDOR_AMD     0x02
- #define DRM_FORMAT_RESERVED	      ((1ULL << 56) - 1)
- #define fourcc_mod_code(vendor, val) \
--	((((__u64)DRM_FORMAT_MOD_VENDOR_## vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
-+	((((uint64_t)DRM_FORMAT_MOD_VENDOR_## vendor) << 56) | ((val) & 0x00ffffffffffffffULL))
- #define DRM_FORMAT_MOD_INVALID	fourcc_mod_code(NONE, DRM_FORMAT_RESERVED)
- #define DRM_FORMAT_MOD_LINEAR	fourcc_mod_code(NONE, 0)
- #define AMD_FMT_MOD fourcc_mod_code(AMD, 0)
 diff --git a/src/amd/common/ac_gpu_info.c b/src/amd/common/ac_gpu_info.c
 index 6e4c0b0..837af8c 100644
 --- a/src/amd/common/ac_gpu_info.c
@@ -159,7 +153,7 @@ index 6e4c0b0..837af8c 100644
  drmGetFormatModifierName(uint64_t modifier)
  {
 diff --git a/src/amd/common/ac_linux_drm.h b/src/amd/common/ac_linux_drm.h
-index 3843b25..9fd8f3e 100644
+index 3843b25..e159d13 100644
 --- a/src/amd/common/ac_linux_drm.h
 +++ b/src/amd/common/ac_linux_drm.h
 @@ -9,7 +9,7 @@
@@ -184,7 +178,7 @@ index 3843b25..9fd8f3e 100644
  
 -/* All functions are static inline stubs on Windows. */
 -#ifdef _WIN32
-+/* All functions are static inline stubs without DRM (Windows, the PS4). */
++/* All functions are static inline stubs without DRM. */
 +#if defined(_WIN32) || defined(AMD_NO_DRM)
  #define __U_STUB__
  #endif
@@ -318,34 +312,19 @@ index 0e1a989..9005bdd 100644
     const struct radv_physical_device *pdev = radv_device_physical(device);
     const enum amd_ip_type ring = radv_queue_ring(queue);
 diff --git a/src/vulkan/wsi/wsi_common_headless.c b/src/vulkan/wsi/wsi_common_headless.c
-index 23b375f..b84d482 100644
+index 23b375f..53e8149 100644
 --- a/src/vulkan/wsi/wsi_common_headless.c
 +++ b/src/vulkan/wsi/wsi_common_headless.c
-@@ -489,12 +489,19 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
- 
+@@ -490,7 +490,11 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
     struct wsi_base_image_params *image_params = NULL;
     struct wsi_cpu_image_params cpu_params;
-+#ifdef HAVE_LIBDRM
     struct wsi_drm_image_params drm_params;
+-   if (wsi_device->sw) {
++   bool cpu_image = wsi_device->sw;
++#ifndef HAVE_LIBDRM
++   cpu_image = true; /* no DRM images without libdrm */
 +#endif
-+   /* Without libdrm there are no DRM images: a hardware driver's images are
-+    * blitted to a host buffer, as a software one's are presented. */
-+#ifdef HAVE_LIBDRM
-    if (wsi_device->sw) {
-+#endif
++   if (cpu_image) {
        cpu_params = (struct wsi_cpu_image_params) {
           .base.image_type = WSI_IMAGE_TYPE_CPU,
        };
-       image_params = &cpu_params.base;
-+#ifdef HAVE_LIBDRM
-    } else {
-       drm_params = (struct wsi_drm_image_params) {
-          .base.image_type = WSI_IMAGE_TYPE_DRM,
-@@ -505,6 +512,7 @@ wsi_headless_surface_create_swapchain(VkIcdSurfaceBase *icd_surface,
-       };
-       image_params = &drm_params.base;
-    }
-+#endif
- 
-    result = wsi_swapchain_init(wsi_device, &chain->base, device,
-                                pCreateInfo, image_params, pAllocator);

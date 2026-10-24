@@ -1,65 +1,31 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 30d1d3844a568ee974d33d43ff41b601ddff670a Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
-Date: Sat, 17 Oct 2026 15:35:03 +0000
-Subject: [PATCH 12/13] wsi: VK_KHR_display on the PS4's VideoOut
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 08/12] vulkan/wsi: VK_KHR_display on the PS4's VideoOut
 
-In place of the DRM backend (wsi_common_display.c), which the console does
-not have, VK_KHR_display drives VideoOut (wsi_common_videoout.c):
-
-- one display, one plane and one 1920x1080 mode at 59.94 Hz;
-- five 16 MiB framebuffers of garlic direct memory, imported into the
-  device as host memory (VK_EXT_external_memory_host), B8G8R8A8
-  (VideoOut's A8R8G8B8);
-- registered with sceVideoOutRegisterBuffers once the first swapchain's
-  images are laid out in them, in VideoOut's tiled mode at the images'
-  pitch: RADV gives a GFX7 scanout image the 2D thin display tiling that
-  mode scans out (tile mode 10, pitch 1920, 1920x1088, 32 KiB aligned);
-- a present waits for its frame on a thread and flips it with
-  sceVideoOutSubmitFlip at a vblank; an acquire reads the shown flip from
-  sceVideoOutGetFlipStatus and waits with sceVideoOutWaitVblank. FIFO is
-  the only present mode.
-
-The framebuffers are the process's, so a device made again, as RetroArch
-makes one for each core, presents where the last one did. The WSI gets
-vkGetMemoryHostPointerPropertiesEXT for the imports. The DRM display
-extensions (EXT_direct_mode_display, EXT_display_surface_counter,
-EXT_acquire_drm_display, EXT_display_control) are not offered.
-
-The host model runs the same swapchain logic with stand-ins for the
-calls.
+In place of the DRM backend, VK_KHR_display drives VideoOut: one
+display, one plane and one 1920x1080 mode. The framebuffers belong to
+the process and are imported into each swapchain as host memory, so a
+recreated device presents where the previous one did. Presents are
+flipped by a thread once their fences signal; FIFO is the only present
+mode.
 
 Co-authored-by: Mihawk <163614687+mihawk-99@users.noreply.github.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
 ---
- meson.build                           |    3 +
- src/amd/vulkan/radv_instance.c        |    2 +
- src/amd/vulkan/radv_physical_device.c |    2 +-
- src/vulkan/meson.build                |    5 +-
- src/vulkan/wsi/meson.build            |    4 +-
- src/vulkan/wsi/wsi_common.c           |   12 +
- src/vulkan/wsi/wsi_common.h           |    1 +
- src/vulkan/wsi/wsi_common_private.h   |   15 +
- src/vulkan/wsi/wsi_common_videoout.c  | 1011 +++++++++++++++++++++++++
- 9 files changed, 1052 insertions(+), 3 deletions(-)
+ src/amd/vulkan/radv_instance.c        |   2 +
+ src/amd/vulkan/radv_physical_device.c |   2 +-
+ src/vulkan/meson.build                |   5 +-
+ src/vulkan/wsi/meson.build            |   4 +-
+ src/vulkan/wsi/wsi_common.c           |  12 +
+ src/vulkan/wsi/wsi_common.h           |   1 +
+ src/vulkan/wsi/wsi_common_private.h   |  15 +
+ src/vulkan/wsi/wsi_common_videoout.c  | 873 ++++++++++++++++++++++++++
+ 8 files changed, 911 insertions(+), 3 deletions(-)
  create mode 100644 src/vulkan/wsi/wsi_common_videoout.c
 
-diff --git a/meson.build b/meson.build
-index b58150c..18a4e57 100644
---- a/meson.build
-+++ b/meson.build
-@@ -345,6 +345,9 @@ endif
- if _vulkan_drivers.contains('amd') and get_option('radv-winsys') == 'ps4' and host_machine.system() != 'linux'
-   system_has_kms_drm = false
- endif
-+# Its one display is VideoOut (src/vulkan/wsi/wsi_common_videoout.c), in the
-+# host model's builds too, rather than a DRM connector.
-+with_wsi_videoout = _vulkan_drivers.contains('amd') and get_option('radv-winsys') == 'ps4'
- 
- # This has to be below the freedreno_kmds check since that can change system_has_kms_drm
- with_gallium_kmsro = with_gallium_drm or (system_has_kms_drm and with_gallium_zink)
 diff --git a/src/amd/vulkan/radv_instance.c b/src/amd/vulkan/radv_instance.c
-index 621fa7a..eca90d3 100644
+index f509940..90450f8 100644
 --- a/src/amd/vulkan/radv_instance.c
 +++ b/src/amd/vulkan/radv_instance.c
 @@ -241,10 +241,12 @@ static const struct vk_instance_extension_table radv_instance_extensions_support
@@ -76,10 +42,10 @@ index 621fa7a..eca90d3 100644
     .EXT_headless_surface = true,
  #endif
 diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
-index b486a66..7aef92c 100644
+index 1b7aa76..0fe8374 100644
 --- a/src/amd/vulkan/radv_physical_device.c
 +++ b/src/amd/vulkan/radv_physical_device.c
-@@ -870,7 +870,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
+@@ -869,7 +869,7 @@ radv_physical_device_get_supported_extensions(const struct radv_physical_device
        .EXT_device_generated_commands = pdev->info.gfx_level >= GFX8 && pdev->info.has_gpu_written_ibs,
        .EXT_device_memory_report = true,
        .EXT_discard_rectangles = true,
@@ -89,7 +55,7 @@ index b486a66..7aef92c 100644
  #endif
        .EXT_dynamic_rendering_unused_attachments = true,
 diff --git a/src/vulkan/meson.build b/src/vulkan/meson.build
-index 614a33a..1c2a3ca 100644
+index 614a33a..dcd7ffc 100644
 --- a/src/vulkan/meson.build
 +++ b/src/vulkan/meson.build
 @@ -54,7 +54,10 @@ if with_platform_wayland
@@ -97,7 +63,7 @@ index 614a33a..1c2a3ca 100644
    vulkan_wsi_list += '-DVK_USE_PLATFORM_WAYLAND_KHR'
  endif
 -if system_has_kms_drm and not with_platform_android
-+if with_wsi_videoout
++if with_radv_ps4
 +  vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
 +  vulkan_wsi_list += '-DMESA_WSI_VIDEOOUT'
 +elif system_has_kms_drm and not with_platform_android
@@ -105,7 +71,7 @@ index 614a33a..1c2a3ca 100644
    vulkan_wsi_list += '-DVK_USE_PLATFORM_DISPLAY_KHR'
  endif
 diff --git a/src/vulkan/wsi/meson.build b/src/vulkan/wsi/meson.build
-index 80925d1..1593400 100644
+index 80925d1..22d2797 100644
 --- a/src/vulkan/wsi/meson.build
 +++ b/src/vulkan/wsi/meson.build
 @@ -38,7 +38,9 @@ if with_platform_macos
@@ -113,7 +79,7 @@ index 80925d1..1593400 100644
  endif
  
 -if system_has_kms_drm and not with_platform_android
-+if with_wsi_videoout
++if with_radv_ps4
 +  files_vulkan_wsi += files('wsi_common_videoout.c')
 +elif system_has_kms_drm and not with_platform_android
    files_vulkan_wsi += files('wsi_common_display.c')
@@ -203,10 +169,10 @@ index 3d2cd7d..c84b668 100644
     struct wsi_base_image_params base;
 diff --git a/src/vulkan/wsi/wsi_common_videoout.c b/src/vulkan/wsi/wsi_common_videoout.c
 new file mode 100644
-index 0000000..915f885
+index 0000000..304b2d8
 --- /dev/null
 +++ b/src/vulkan/wsi/wsi_common_videoout.c
-@@ -0,0 +1,1011 @@
+@@ -0,0 +1,873 @@
 +/*
 + * Copyright © 2026 Mihawk
 + * Copyright © 2026 John Törnblom
@@ -215,25 +181,16 @@ index 0000000..915f885
 + */
 +
 +/*
-+ * VK_KHR_display on the PlayStation 4's one display, VideoOut, in place of
-+ * the DRM backend (wsi_common_display.c), which the console does not have.
++ * VK_KHR_display on the PS4's VideoOut, in place of the DRM backend.
 + *
-+ * The display has one plane and one 1920x1080 mode at 59.94 Hz. VideoOut's
-+ * framebuffers are the process's: five 16 MiB buffers of garlic direct memory
-+ * (the GPU's fast path, which the CPU writes combined), registered once the
-+ * first swapchain's images are laid out in them, since VideoOut takes them
-+ * with their pitch. A swapchain takes the first of them as its images,
-+ * imported into its device as host memory (VK_EXT_external_memory_host) and
-+ * laid out as the display takes them: the GPU's 2D thin display tiling, which
-+ * RADV gives a GFX7 scanout image and VideoOut scans out as its tiled mode.
-+ * So a device made again, as RetroArch makes one for each core, presents
-+ * where the last one did and the screen keeps its last frame in between.
++ * There is one display with one plane and one 1920x1080 mode. The framebuffers
++ * belong to the process: they are allocated once, imported into each swapchain
++ * as host memory (VK_EXT_external_memory_host), and registered with VideoOut
++ * once the first swapchain tells their pitch. The images use the 2D thin
++ * display tiling RADV gives GFX7 scanout images, which VideoOut scans out.
 + *
-+ * A present waits for the frame on a thread and flips it with
-+ * sceVideoOutSubmitFlip at the next vblank; FIFO is the only present mode. An
-+ * acquire takes a buffer that is neither on screen, nor waiting for its flip
-+ * to show, nor held by an application, the one flipped longest ago, and waits
-+ * for a flip or a vblank when none is.
++ * A present waits for its fence on a thread and flips at the next vblank; FIFO
++ * is the only present mode.
 + */
 +
 +#include <assert.h>
@@ -253,11 +210,7 @@ index 0000000..915f885
 +#include "wsi_common_entrypoints.h"
 +#include "wsi_common_private.h"
 +
-+/* The console's declarations, for the host model's too. */
 +#include "ps4_sce.h"
-+#if !defined(__ORBIS__)
-+#include <sys/mman.h>
-+#endif
 +
 +#define VIDEOOUT_NAME "PS4 VideoOut"
 +#define VIDEOOUT_WIDTH 1920
@@ -268,99 +221,9 @@ index 0000000..915f885
 +#define VIDEOOUT_BUFFER_ALIGNMENT (UINT64_C(2) << 20)
 +#define VIDEOOUT_REFRESH_MILLIHERTZ 59940
 +
-+#if !defined(__ORBIS__)
-+/* The host model: flips show at once and a vblank comes every millisecond,
-+ * enough for the host builds to run the swapchain's logic. Its functions stand
-+ * in for the console's by name. */
-+static int64_t host_shown_argument;
-+
-+static int32_t
-+videoout_host_open(int32_t user, int32_t bus, int32_t index, const void *parameter)
-+{
-+   return 1;
-+}
-+
-+static int32_t
-+videoout_host_set_flip_rate(int32_t handle, int32_t rate)
-+{
-+   return 0;
-+}
-+
-+static void
-+videoout_host_set_buffer_attribute(struct ps4_video_out_buffer_attribute *attribute, uint32_t pixel_format,
-+                                   uint32_t tiling_mode, uint32_t aspect_ratio, uint32_t width, uint32_t height,
-+                                   uint32_t pitch_in_pixel)
-+{
-+   *attribute = (struct ps4_video_out_buffer_attribute){
-+      .pixel_format = pixel_format,
-+      .tiling_mode = tiling_mode,
-+      .aspect_ratio = aspect_ratio,
-+      .width = width,
-+      .height = height,
-+      .pitch_in_pixel = pitch_in_pixel,
-+   };
-+}
-+
-+static int32_t
-+videoout_host_register_buffers(int32_t handle, int32_t start, void *const *addresses, int32_t count,
-+                               const struct ps4_video_out_buffer_attribute *attribute)
-+{
-+   return 0;
-+}
-+
-+static int32_t
-+videoout_host_submit_flip(int32_t handle, int32_t buffer_index, uint32_t flip_mode, int64_t argument)
-+{
-+   host_shown_argument = argument;
-+   return 0;
-+}
-+
-+static int32_t
-+videoout_host_get_flip_status(int32_t handle, struct ps4_video_out_flip_status *status)
-+{
-+   *status = (struct ps4_video_out_flip_status){.flip_argument = host_shown_argument};
-+   return 0;
-+}
-+
-+static int32_t
-+videoout_host_wait_vblank(int32_t handle)
-+{
-+   os_time_sleep(1000);
-+   return 0;
-+}
-+
-+#define sceVideoOutOpen videoout_host_open
-+#define sceVideoOutSetFlipRate videoout_host_set_flip_rate
-+#define sceVideoOutSetBufferAttribute videoout_host_set_buffer_attribute
-+#define sceVideoOutRegisterBuffers videoout_host_register_buffers
-+#define sceVideoOutSubmitFlip videoout_host_submit_flip
-+#define sceVideoOutGetFlipStatus videoout_host_get_flip_status
-+#define sceVideoOutWaitVblank videoout_host_wait_vblank
-+#endif
-+
-+/* The display and its mode: one each per process, as VideoOut is. */
-+struct wsi_videoout_mode {
-+   uint32_t refresh_millihertz;
-+};
-+
-+struct wsi_videoout_display {
-+   int dummy;
-+};
-+
-+static struct wsi_videoout_display videoout_display;
-+static struct wsi_videoout_mode videoout_mode = {.refresh_millihertz = VIDEOOUT_REFRESH_MILLIHERTZ};
-+
-+static VkDisplayKHR
-+videoout_display_handle(void)
-+{
-+   return (VkDisplayKHR)(uintptr_t)&videoout_display;
-+}
-+
-+static VkDisplayModeKHR
-+videoout_mode_handle(struct wsi_videoout_mode *mode)
-+{
-+   return (VkDisplayModeKHR)(uintptr_t)mode;
-+}
++/* The display and its mode have constant non-zero handles. */
++#define VIDEOOUT_DISPLAY ((VkDisplayKHR)(uintptr_t)1)
++#define VIDEOOUT_MODE ((VkDisplayModeKHR)(uintptr_t)1)
 +
 +static const VkExtent2D videoout_extent = {VIDEOOUT_WIDTH, VIDEOOUT_HEIGHT};
 +
@@ -380,17 +243,16 @@ index 0000000..915f885
 +   bool opened;
 +   int handle;
 +   uint8_t *buffers;
-+   /* The pitch, in pixels, the framebuffers were registered with; 0 before
-+    * (VideoOut takes them with it). */
++   /* The pitch in pixels the framebuffers were registered with, or 0. */
 +   uint32_t registered_pitch;
-+   /* The argument of the latest flip submitted; each flip's is one more. */
++   /* The argument of the latest flip; each flip's is one more. */
 +   int64_t flip_argument;
 +   struct {
-+      /* The argument this buffer was last flipped with, 0 before its first flip. */
++      /* The argument of this buffer's latest flip, or 0. */
 +      int64_t argument;
 +      /* An application holds it, acquired and not yet presented. */
 +      bool held;
-+      /* Presented, its flip waiting for the frame. */
++      /* Presented, waiting for its fence before the flip. */
 +      bool pending;
 +   } buffer[VIDEOOUT_BUFFERS];
 +   /* The swapchain presenting now; older ones are retired. */
@@ -423,13 +285,9 @@ index 0000000..915f885
 +   struct wsi_image images[];
 +};
 +
-+struct wsi_videoout {
-+   struct wsi_interface base;
-+};
-+
 +/* --- VideoOut ------------------------------------------------------------ */
 +
-+/* Opens VideoOut once per process. Under lock. */
++/* Opens VideoOut once per process. */
 +static bool
 +videoout_open_locked(void)
 +{
@@ -445,9 +303,7 @@ index 0000000..915f885
 +   return true;
 +}
 +
-+/* The framebuffers, allocated and cleared once per process; VideoOut takes
-+ * them with their pitch, which the first swapchain's images give
-+ * (videoout_register_pitch_locked). Under lock. */
++/* Allocates the framebuffers once per process. */
 +static VkResult
 +videoout_alloc_buffers_locked(void)
 +{
@@ -458,9 +314,6 @@ index 0000000..915f885
 +      return VK_ERROR_INITIALIZATION_FAILED;
 +
 +   const size_t bytes = VIDEOOUT_BUFFERS * VIDEOOUT_BUFFER_BYTES;
-+   uint8_t *buffers = NULL;
-+#if defined(__ORBIS__)
-+   /* Garlic, as the GPU's render targets are: the GPU's fast path. */
 +   int64_t physical = -1;
 +   if (sceKernelAllocateDirectMemory(0, sceKernelGetDirectMemorySize(), bytes, VIDEOOUT_BUFFER_ALIGNMENT,
 +                                     PS4_KERNEL_WC_GARLIC, &physical) != 0)
@@ -473,26 +326,14 @@ index 0000000..915f885
 +      sceKernelReleaseDirectMemory(physical, bytes);
 +      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
 +   }
-+   buffers = address;
-+   /* Written combined: the stores need only leave the CPU. */
-+   memset(buffers, 0, bytes);
++   memset(address, 0, bytes);
 +   __builtin_ia32_sfence();
-+#else
-+   /* Aligned as the console's, which a host pointer import requires. */
-+   uint8_t *const mapping = mmap(NULL, bytes + VIDEOOUT_BUFFER_ALIGNMENT, PROT_READ | PROT_WRITE,
-+                                 MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);
-+   if (mapping == MAP_FAILED)
-+      return VK_ERROR_OUT_OF_DEVICE_MEMORY;
-+   buffers = (uint8_t *)align_uintptr((uintptr_t)mapping, VIDEOOUT_BUFFER_ALIGNMENT);
-+#endif
 +
-+   out->buffers = buffers;
++   out->buffers = address;
 +   return VK_SUCCESS;
 +}
 +
-+/* The framebuffers registered once per process, as the images in them are
-+ * laid out: B8G8R8A8 in the GPU's display tiles, at the pitch the images
-+ * have. A later swapchain's images have the same layout. Under lock. */
++/* Registers the framebuffers, once per process, with the images' pitch. */
 +static VkResult
 +videoout_register_pitch_locked(uint32_t pitch_pixels)
 +{
@@ -526,7 +367,7 @@ index 0000000..915f885
 +   return status.flip_argument;
 +}
 +
-+/* The flip thread: each present's flip once its frame is done, in order. */
++/* Flips each present once its fence signals, in order. */
 +static int
 +videoout_flip_thread(void *data)
 +{
@@ -571,7 +412,7 @@ index 0000000..915f885
 +   vk_outarray_append_typed(VkDisplayPropertiesKHR, &out, prop)
 +   {
 +      *prop = (VkDisplayPropertiesKHR){
-+         .display = videoout_display_handle(),
++         .display = VIDEOOUT_DISPLAY,
 +         .displayName = VIDEOOUT_NAME,
 +         /* The size of the screen VideoOut drives is not known. */
 +         .physicalDimensions = {0, 0},
@@ -605,7 +446,7 @@ index 0000000..915f885
 +   vk_outarray_append_typed(VkDisplayPlanePropertiesKHR, &out, prop)
 +   {
 +      *prop = (VkDisplayPlanePropertiesKHR){
-+         .currentDisplay = videoout_display_handle(),
++         .currentDisplay = VIDEOOUT_DISPLAY,
 +         .currentStackIndex = 0,
 +      };
 +   }
@@ -632,7 +473,7 @@ index 0000000..915f885
 +   VK_OUTARRAY_MAKE_TYPED(VkDisplayKHR, out, pDisplays, pDisplayCount);
 +   if (planeIndex == 0) {
 +      vk_outarray_append_typed(VkDisplayKHR, &out, display)
-+         *display = videoout_display_handle();
++         *display = VIDEOOUT_DISPLAY;
 +   }
 +   return vk_outarray_status(&out);
 +}
@@ -645,8 +486,8 @@ index 0000000..915f885
 +   vk_outarray_append_typed(VkDisplayModePropertiesKHR, &out, prop)
 +   {
 +      *prop = (VkDisplayModePropertiesKHR){
-+         .displayMode = videoout_mode_handle(&videoout_mode),
-+         .parameters = {.visibleRegion = videoout_extent, .refreshRate = videoout_mode.refresh_millihertz},
++         .displayMode = VIDEOOUT_MODE,
++         .parameters = {.visibleRegion = videoout_extent, .refreshRate = VIDEOOUT_REFRESH_MILLIHERTZ},
 +      };
 +   }
 +   return vk_outarray_status(&out);
@@ -660,8 +501,8 @@ index 0000000..915f885
 +   vk_outarray_append_typed(VkDisplayModeProperties2KHR, &out, prop)
 +   {
 +      prop->displayModeProperties = (VkDisplayModePropertiesKHR){
-+         .displayMode = videoout_mode_handle(&videoout_mode),
-+         .parameters = {.visibleRegion = videoout_extent, .refreshRate = videoout_mode.refresh_millihertz},
++         .displayMode = VIDEOOUT_MODE,
++         .parameters = {.visibleRegion = videoout_extent, .refreshRate = VIDEOOUT_REFRESH_MILLIHERTZ},
 +      };
 +   }
 +   return vk_outarray_status(&out);
@@ -672,13 +513,11 @@ index 0000000..915f885
 +                         const VkDisplayModeCreateInfoKHR *pCreateInfo, const VkAllocationCallbacks *pAllocator,
 +                         VkDisplayModeKHR *pMode)
 +{
-+   /* VideoOut's mode is the one reported and it makes no others: one asked
-+    * for with the reported mode's parameters is that mode. */
 +   const VkDisplayModeParametersKHR *parameters = &pCreateInfo->parameters;
 +   if (parameters->visibleRegion.width == videoout_extent.width &&
 +       parameters->visibleRegion.height == videoout_extent.height &&
-+       parameters->refreshRate == videoout_mode.refresh_millihertz) {
-+      *pMode = videoout_mode_handle(&videoout_mode);
++       parameters->refreshRate == VIDEOOUT_REFRESH_MILLIHERTZ) {
++      *pMode = VIDEOOUT_MODE;
 +      return VK_SUCCESS;
 +   }
 +   return VK_ERROR_INITIALIZATION_FAILED;
@@ -743,7 +582,6 @@ index 0000000..915f885
 +videoout_surface_get_support(VkIcdSurfaceBase *surface, struct wsi_device *wsi_device, uint32_t queueFamilyIndex,
 +                             VkBool32 *pSupported)
 +{
-+   /* Flips come from the CPU once a frame is done, from any queue's work. */
 +   *pSupported = VK_TRUE;
 +   return VK_SUCCESS;
 +}
@@ -867,7 +705,7 @@ index 0000000..915f885
 +
 +/* --- Images -------------------------------------------------------------- */
 +
-+/* A swapchain image: the framebuffer of its index, imported as host memory. */
++/* Imports the framebuffer of the image's index. */
 +static VkResult
 +videoout_create_image_mem(const struct wsi_swapchain *wsi_chain, const struct wsi_image_info *info,
 +                          struct wsi_image *image)
@@ -917,7 +755,6 @@ index 0000000..915f885
 +   if (result != VK_SUCCESS)
 +      return result;
 +
-+   /* Laid out as the display scans out. */
 +   info->wsi.scanout = true;
 +   info->create_mem = videoout_create_image_mem;
 +   return VK_SUCCESS;
@@ -932,17 +769,15 @@ index 0000000..915f885
 +   return &chain->images[image_index];
 +}
 +
-+/* A buffer of the first count an application may render into, under lock:
-+ * neither held, nor waiting for its flip, nor flipped past the flip shown
-+ * last, nor on screen; the one flipped longest ago. UINT32_MAX when none is,
-+ * with *vblank set when only a flip still to show holds one. */
++/* The least recently flipped of the first count buffers that is neither held, pending, queued
++ * for a flip nor on screen; or UINT32_MAX, with *vblank set if a queued flip holds one.
++ */
 +static uint32_t
 +videoout_free_buffer_locked(uint32_t count, bool *vblank)
 +{
 +   struct wsi_videoout_output *out = &videoout_output;
 +   const int64_t shown = videoout_shown_argument_locked();
 +
-+   /* On screen: the buffer of the latest flip shown. */
 +   uint32_t on_screen = UINT32_MAX;
 +   for (uint32_t i = 0; i < VIDEOOUT_BUFFERS; i++)
 +      if (out->buffer[i].argument != 0 && out->buffer[i].argument <= shown &&
@@ -995,13 +830,11 @@ index 0000000..915f885
 +         return VK_TIMEOUT;
 +      }
 +      if (vblank) {
-+         /* A flip still to show frees one at a vblank. */
 +         const int handle = out->handle;
 +         mtx_unlock(&out->lock);
 +         sceVideoOutWaitVblank(handle);
 +         mtx_lock(&out->lock);
 +      } else {
-+         /* A flip waiting for its frame, or an image held: wait for either. */
 +         struct timespec until;
 +         const uint64_t wake = MIN2(deadline, os_time_get_nano() + UINT64_C(20000000));
 +         until.tv_sec = wake / 1000000000;
@@ -1070,7 +903,7 @@ index 0000000..915f885
 +   struct wsi_videoout_swapchain *chain = (struct wsi_videoout_swapchain *)wsi_chain;
 +   struct wsi_videoout_output *out = &videoout_output;
 +
-+   /* Its flips use its fences: they go first. */
++   /* Its pending flips use its fences. */
 +   mtx_lock(&out->lock);
 +   while (chain->in_flight)
 +      cnd_wait(&out->changed, &out->lock);
@@ -1148,8 +981,6 @@ index 0000000..915f885
 +      }
 +   }
 +
-+   /* VideoOut scans the framebuffers out as the images lie in them: from
-+    * their start, at the images' pitch. */
 +   const VkImageSubresource subresource = {.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT};
 +   VkSubresourceLayout layout;
 +   wsi_device->GetImageSubresourceLayout(device, chain->images[0].image, &subresource, &layout);
@@ -1170,7 +1001,6 @@ index 0000000..915f885
 +      return result;
 +   }
 +
-+   /* The old swapchain is retired: its acquires and presents are out of date. */
 +   mtx_lock(&out->lock);
 +   if (out->current)
 +      out->current->retired = true;
@@ -1186,7 +1016,7 @@ index 0000000..915f885
 +VkResult
 +wsi_display_init_wsi(struct wsi_device *wsi_device, const VkAllocationCallbacks *alloc, int display_fd)
 +{
-+   struct wsi_videoout *wsi = vk_zalloc(alloc, sizeof(*wsi), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
++   struct wsi_interface *wsi = vk_zalloc(alloc, sizeof(*wsi), 8, VK_SYSTEM_ALLOCATION_SCOPE_INSTANCE);
 +   if (!wsi) {
 +      wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY] = NULL;
 +      return VK_ERROR_OUT_OF_HOST_MEMORY;
@@ -1194,24 +1024,22 @@ index 0000000..915f885
 +
 +   call_once(&videoout_once, videoout_output_init_once);
 +
-+   wsi->base.get_support = videoout_surface_get_support;
-+   wsi->base.get_capabilities2 = videoout_surface_get_capabilities2;
-+   wsi->base.get_formats = videoout_surface_get_formats;
-+   wsi->base.get_formats2 = videoout_surface_get_formats2;
-+   wsi->base.get_present_modes = videoout_surface_get_present_modes;
-+   wsi->base.get_present_rectangles = videoout_surface_get_present_rectangles;
-+   wsi->base.create_swapchain = videoout_surface_create_swapchain;
++   wsi->get_support = videoout_surface_get_support;
++   wsi->get_capabilities2 = videoout_surface_get_capabilities2;
++   wsi->get_formats = videoout_surface_get_formats;
++   wsi->get_formats2 = videoout_surface_get_formats2;
++   wsi->get_present_modes = videoout_surface_get_present_modes;
++   wsi->get_present_rectangles = videoout_surface_get_present_rectangles;
++   wsi->create_swapchain = videoout_surface_create_swapchain;
 +
-+   wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY] = &wsi->base;
++   wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY] = wsi;
 +   return VK_SUCCESS;
 +}
 +
 +void
 +wsi_display_finish_wsi(struct wsi_device *wsi_device, const VkAllocationCallbacks *alloc)
 +{
-+   struct wsi_videoout *wsi = (struct wsi_videoout *)wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY];
-+   if (wsi)
-+      vk_free(alloc, wsi);
++   vk_free(alloc, wsi_device->wsi[VK_ICD_WSI_PLATFORM_DISPLAY]);
 +}
 +
 +void

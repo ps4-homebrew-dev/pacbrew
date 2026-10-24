@@ -1,6 +1,6 @@
 pkgname=ps4-homebrew-mesa
 pkgver=26.2.0
-pkgrel=10
+pkgrel=11
 pkgdesc="Open-source Vulkan and OpenGL drivers for the PS4 (RADV, VK_KHR_display on VideoOut; zink, EGL, OpenGL and OpenGL ES on it)"
 url="https://www.mesa3d.org/"
 arch=('any')
@@ -10,68 +10,32 @@ groups=('ps4-homebrew-dev')
 makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-zlib')
 
 source=("https://mesa.freedesktop.org/archive/mesa-${pkgver}.tar.xz"
-	"0001-meson-amd-a-radv-winsys-option-and-AMD-builds-withou.patch"
-	"0002-util-vulkan-the-PS4-s-FreeBSD-9-kernel-and-its-libc.patch"
-	"0003-util-disk_cache-a-shader-cache-in-a-PS4-title-s-fold.patch"
-	"0004-ac-leave-the-raster-config-to-the-kernel-where-it-se.patch"
-	"0005-amd-addrlib-no-AVX2-swizzlers-in-the-PS4-console-bui.patch"
-	"0006-radv-report-only-what-the-winsys-can-do.patch"
-	"0007-radv-a-compute-and-transfer-queue-family-on-the-grap.patch"
-	"0008-radv-let-the-winsys-split-a-long-command-stream.patch"
-	"0009-radv-pipeline-representations-that-were-not-recorded.patch"
-	"0010-radv-vulkan-util-RADV-is-the-PS4-s-libvulkan.so.1.patch"
-	"0011-radv-a-PS4-winsys-on-Gnm.patch"
-	"0012-wsi-VK_KHR_display-on-the-PS4-s-VideoOut.patch"
-	"0013-radv-no-CMASK-fast-clear-for-a-console-display-surfa.patch"
-	"0014-zink-present-to-a-VK_KHR_display-surface-and-link-RA.patch"
-	"0015-glapi-the-current-dispatch-and-context-through-calls.patch"
-	"0016-egl-a-videoout-platform-zink-on-the-PS4-s-display.patch"
-	"0017-radv-ps4-tile-mode-18-is-PRT_3D_TILED_THIN1.patch"
-	"0018-radv-ps4-the-completion-fence-writes-L2-back.patch"
-	"0019-radv-ps4-free-a-buffer-s-memory-once-the-GPU-is-done.patch"
-	"0020-radv-ps4-no-stale-CPU-cache-lines-in-new-garlic-memo.patch"
-	"0021-ac-aco-radv-typed-vertex-fetches-aligned-where-the-k.patch"
-	"0022-radv-no-SET_PREDICATION-where-the-CP-hangs-on-it.patch"
-	"0023-radv-no-DRAW_INDIRECT_MULTI-where-the-CP-hangs-on-it.patch"
-	"0024-radv-ps4-the-legacy-GS-rings-at-the-size-the-VGT-wra.patch"
-	"0025-radv-ps4-tessellation-s-rings-where-the-VGT-uses-the.patch"
-	"0026-ac-write-PA_CL_NANINF_CNTL-on-GFX6-9-whatever-CLEAR_.patch"
-	"0027-zink-destroy-the-resource-object-s-copy-lock.patch"
-	"0028-radv-no-CMASK-where-the-CB-wedges-on-it.patch"
-	"0029-mesa-a-libGL-without-GLX-for-the-videoout-platform.patch"
-	"0030-radv-no-layers-is-a-complete-answer-to-vkEnumerateIn.patch")
+	"0001-build-add-Dradv-winsys-ps4-and-build-the-AMD-code-wi.patch"
+	"0002-util-vulkan-support-the-PS4-s-libc-and-FreeBSD-9-ker.patch"
+	"0003-util-disk_cache-shader-cache-support-for-the-PS4.patch"
+	"0004-radv-handle-winsyses-without-some-amdgpu-capabilitie.patch"
+	"0005-ac-radv-work-around-PS4-GPU-and-firmware-differences.patch"
+	"0006-radv-let-the-winsys-split-long-command-streams.patch"
+	"0007-radv-add-a-PS4-winsys.patch"
+	"0008-vulkan-wsi-VK_KHR_display-on-the-PS4-s-VideoOut.patch"
+	"0009-zink-support-VK_KHR_display-surfaces.patch"
+	"0010-zink-destroy-the-resource-object-s-copy-lock.patch"
+	"0011-egl-add-the-videoout-platform.patch"
+	"0012-glapi-a-libGL-without-GLX-for-the-videoout-platform.patch")
 
 sha256sums=('efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef'
-	    'f15f5a369c9761119b7dabb387302962a3272cb7aad83a2f48bae9c537c312d0'
-	    '3cec1733efd0ad16eac551e40a8ee4b09a5aaf0a48c79e4cbee71ac86761094c'
-	    '340766700164672b1bda0c368c24401bd4b4f73e82bcf04fec8eddac2643f1cb'
-	    '2cb8bd356cb1904dd0d8df5b47e44be47226b98ce8896faebd20729a4e47e01c'
-	    'f8038dabca004ffe0947a6104296d1b0bd93947754f98d47a3e168fc667066ab'
-	    '8752d7f00ca48edf4f88420ae2b59ac7cee7d7fc17286c797556e327fed6a11c'
-	    'aa2fcc2cde6a35e28484001f4693092ff306635ec6f4e416001efb6c509b5bfb'
-	    '75a12c2e42b04c51406d9f551acde35a233981fc5833877270f50935cdd06720'
-	    '9929310d91a090cf751cfd32dadf7f1f84d4388abd5426f76490e3fdb84cbac7'
-	    '24e0cffe37631a5256e16930bf6efa307a7ba8d034889551b7efca2b909800ff'
-	    '96bd7e7c58162bec3f62840bf519f38259ec9104e9eb7c8244f1b11b5c3086dc'
-	    '64a754e9b9cbe2320bb85f40496c1473c4b80e797b2a66109df34324614211f1'
-	    '15344d5a206e566f98f683acc673122d16d9c98b2fc3099fbba7d91ebbed0506'
-	    '655a4e70876f84818d7257d83c3afcf333899189ef8065da9fba995039decce9'
-	    '1c067c05d4eed3e0bb03b8b8ecd4ba971e25bfbc2cbe26659f148f9a513fb877'
-	    '7a919c4c9187732c0ac0303dfdd079847008aad36c672bbe4dac2ffd7d674a93'
-	    'fa0e6d9fdf4d98c82af088602650eaf71316426d5da1684b26552631bb361c0f'
-	    'b6accffe0c1b3a5ba8d4c3307b139e48e365a332204aa859e82faf06a95f19c9'
-	    'd7f9c2a472b0c235a24754ed0401861b77fe68743e7012f28f99ce0effa763ed'
-	    '3c900c98448ac34fb96b6d63c2ada78daf3cb2c8fe2b62a8283800832b4564be'
-	    '0fa6976e5827df0411766bb8a835937949cfe287f1bc36e5d056e2635c6ecf88'
-	    '187a0df58014f98573eb047453d1b38b5ea8002fd2b824fd167f895290cb39f7'
-	    '0d16118ae9bc5cec80d44b9318acb31933f6c1cf75255ac3e5d78ff00c2b03db'
-	    '664fdfd98e9ef30dd86fdcfeec44389ae8f2d229c6eed5e4dc689c853f0a5b07'
-	    '6e0539d39342e99f6df6d0a2dd17feb27527a69ea049dd1de19fac6126de9ee1'
-	    '5391bdd870edf891c23381761e3a244a493f5341794438fc011cfc61acf7d979'
-	    'c90370fffbb9f1364f6e9a8ec8a0c48d526041b8c1df240ce7349c22a7a57d7d'
-	    'a6f5ec72ce81690017bbdcb28bcf5147144d286975e301f7848b987f45c9a54a'
-	    '42ae79f59771ca40f6d2ea59f2ce0caa29e4e4b4f057d01603ea21a9568b6f59'
-	    '5a3930ce8b18dc11ee9de6726a493e71a74c63c7d4d9b469cc95d68b3decfd76')
+	    '1d3bade67eb825badaede06aa29b08745214c955c49dea22596218fbe2742072'
+	    'be3145ba141141fd7e9fa951ef7d665216d367b1f24a426337280f16ad24dd2e'
+	    '0222b6264437f707081b38571da6f811e1b31946944e5a7552d813fc47903501'
+	    'd0fd9e36e07c6d9229a945b0679f669c84a6159c80d2b43ba4b143edc04bc6a5'
+	    '7d31857f4eb2c8f174275c91f777ca8d76c3e1586feed861b51df963c604eb87'
+	    'dfa925094b19797021c4462625406903d082d8e37256b647369c085755be87c4'
+	    '2b547a4ef9b94d7bb4937832bea8eeff9542c0ab6753d0af9c3a255ed2410818'
+	    '1c9d2f45b9406724625954aae017b8cdff261f1abe9b670406c10dbf18fe850c'
+	    '0457a51a62f1292bafd168b762e6176219a2aa1244ea83a531cb36ce5d1d8e5b'
+	    'e196ea1a48b95af9501fb5a921a817ef8e0679ac74be0db7bdce3119f2d5f03e'
+	    'a600545fabf74b7bbb45208be030e57d3bd6047cae269813b31123e980a51540'
+	    '44ecf4d3fdd5fb7fa60d2b3b0989770d25699ca8d726c77da2719c64763a7046')
 
 export PS4_HOMEBREW_SDK="${PS4_HOMEBREW_SDK:-/opt/ps4-homebrew-sdk}"
 

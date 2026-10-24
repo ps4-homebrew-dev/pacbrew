@@ -1,32 +1,25 @@
-From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From 108d0f7134368f7ffd2a2223bea1a096e0998a07 Mon Sep 17 00:00:00 2001
 From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
-Date: Sat, 17 Oct 2026 15:35:01 +0000
-Subject: [PATCH 08/13] radv: let the winsys split a long command stream
+Date: Fri, 23 Oct 2026 22:14:47 +0000
+Subject: [PATCH 06/12] radv: let the winsys split long command streams
 
-A winsys whose submissions may each start from reset GPU state and hold a
-limited number of words (the PS4's) asks for a long stream to be split
-(radeon_winsys.cs_split_due, cs_split). The split falls before a draw or
-dispatch, and from there the command buffer re-emits its state as if it
-had just begun, everything it has bound kept, so the submission after
-the split can start with the same preamble. State that re-emission does
-not restore (streamout, conditional rendering, active queries, an
-inherited render pass) defers the split until it ends.
-
-The render area's registers move to radv_emit_rendering_area so that a
-split inside a render pass, and a resumed render pass on such a winsys,
-write them again.
+A winsys whose submissions are limited in size and may each start from
+reset GPU state (the PS4's) can ask for a stream to be split before a
+draw or dispatch (cs_split_due/cs_split). After the split, the command
+buffer re-emits all its state. Splits are deferred while state that
+can't be re-emitted is active (streamout, conditional rendering,
+queries, inherited render passes).
 
 Co-authored-by: Mihawk <163614687+mihawk-99@users.noreply.github.com>
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01R3DbSodVLhQVcvZSazbPue
 ---
- src/amd/vulkan/radv_cmd_buffer.c    | 188 +++++++++++++++++++++-------
+ src/amd/vulkan/radv_cmd_buffer.c    | 178 +++++++++++++++++++++-------
  src/amd/vulkan/radv_cmd_buffer.h    |   3 +
- src/amd/vulkan/radv_radeon_winsys.h |   8 ++
- 3 files changed, 154 insertions(+), 45 deletions(-)
+ src/amd/vulkan/radv_radeon_winsys.h |   6 +
+ 3 files changed, 142 insertions(+), 45 deletions(-)
 
 diff --git a/src/amd/vulkan/radv_cmd_buffer.c b/src/amd/vulkan/radv_cmd_buffer.c
-index 0fea709..dd79977 100644
+index 3f73795..efb4073 100644
 --- a/src/amd/vulkan/radv_cmd_buffer.c
 +++ b/src/amd/vulkan/radv_cmd_buffer.c
 @@ -10517,6 +10517,63 @@ radv_cmd_buffer_replicate_msrtss_rendering(struct radv_cmd_buffer *cmd_buffer, c
@@ -101,7 +94,7 @@ index 0fea709..dd79977 100644
     bool disable_constant_encode_ac01 = false;
  
     assert(!cmd_buffer->state.render.active);
-@@ -10857,55 +10913,21 @@ radv_CmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *pRe
+@@ -10857,55 +10913,19 @@ radv_CmdBeginRendering(VkCommandBuffer commandBuffer, const VkRenderingInfo *pRe
     if (pdev->info.gfx_level >= GFX12)
        cmd_buffer->state.dirty |= RADV_CMD_DIRTY_GFX12_HIZ_WA_STATE | RADV_CMD_DIRTY_RAST_SAMPLES_STATE;
  
@@ -116,9 +109,7 @@ index 0fea709..dd79977 100644
 +   radv_emit_fb_mip_change_flush(cmd_buffer);
  
 -   if (pRenderingInfo->flags & VK_RENDERING_RESUMING_BIT)
-+   /* A winsys that splits a submission (cs_split) starts the part after the
-+    * split from reset state, so a resumed render pass cannot rely on the
-+    * registers its suspended part wrote. */
++   /* With cs_split, a resumed render pass may start from reset state. */
 +   if ((pRenderingInfo->flags & VK_RENDERING_RESUMING_BIT) && !device->ws->cs_split)
        return;
  
@@ -167,17 +158,15 @@ index 0fea709..dd79977 100644
  
     radv_cmd_buffer_clear_rendering(cmd_buffer, pRenderingInfo);
  }
-@@ -13706,6 +13728,76 @@ radv_bind_graphics_shaders(struct radv_cmd_buffer *cmd_buffer)
+@@ -13731,6 +13751,68 @@ radv_bind_graphics_shaders(struct radv_cmd_buffer *cmd_buffer)
     }
  }
  
-+/* A winsys whose submissions may each start from reset GPU state and hold a
-+ * limited number of words (the PlayStation 4's) asks for a long stream to be
-+ * split. The split falls before a draw or dispatch, and from there the command
-+ * buffer re-emits its state as if it had just begun, everything it has bound
-+ * kept: the submission after the split starts with the same preamble. State
-+ * that re-emission does not restore (streamout, conditional rendering, active
-+ * queries, an inherited render pass) defers the split until it ends. */
++/* Splits a long command stream when the winsys asks for it (PS4, where each submission starts
++ * from the preamble state and its size is limited). After the split, all bound state is
++ * re-emitted. State that can't be re-emitted (streamout, conditional rendering, active queries,
++ * an inherited render pass) defers the split.
++ */
 +static void
 +radv_split_cmd_stream_if_due(struct radv_cmd_buffer *cmd_buffer)
 +{
@@ -197,7 +186,6 @@ index 0fea709..dd79977 100644
 +
 +   device->ws->cs_split(cs->b);
 +
-+   /* What the hardware holds is what a command buffer begins with. */
 +   ac_init_tracked_regs(&cs->tracked_regs, &pdev->info, false);
 +   state->emitted_vs_prolog = NULL;
 +   state->emitted_ps = NULL;
@@ -214,9 +202,7 @@ index 0fea709..dd79977 100644
 +   state->last_drawid = -1;
 +   state->last_subpass_color_count = MAX_RTS;
 +
-+   /* Everything bound, again: every state this device emits (RADV sets the
-+    * RB+, FSR and GFX12 HiZ bits only on hardware that has them, and their
-+    * handlers rely on it). */
++   /* Re-emit everything, except the state this hardware doesn't have. */
 +   uint64_t dirty = RADV_CMD_DIRTY_ALL;
 +   if (!pdev->info.rbplus_allowed)
 +      dirty &= ~RADV_CMD_DIRTY_RBPLUS;
@@ -224,9 +210,6 @@ index 0fea709..dd79977 100644
 +      dirty &= ~RADV_CMD_DIRTY_FSR_STATE;
 +   if (pdev->info.gfx_level < GFX12)
 +      dirty &= ~RADV_CMD_DIRTY_GFX12_HIZ_WA_STATE;
-+   /* Graphics shaders come from a pipeline or from shader objects, and each
-+    * has its own way back: a bound pipeline is emitted again, bound shader
-+    * objects are bound again at the next draw. */
 +   if (state->graphics_pipeline)
 +      dirty &= ~RADV_CMD_DIRTY_GRAPHICS_SHADERS;
 +   else
@@ -244,7 +227,7 @@ index 0fea709..dd79977 100644
  /* MUST inline this function to avoid massive perf loss in drawoverhead */
  ALWAYS_INLINE static bool
  radv_before_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_draw_info *info, uint32_t drawCount, bool dgc)
-@@ -13715,6 +13807,8 @@ radv_before_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_draw_info
+@@ -13740,6 +13822,8 @@ radv_before_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_draw_info
     const bool has_prefetch = pdev->info.gfx_level >= GFX7;
     struct radv_cmd_stream *cs = cmd_buffer->cs;
  
@@ -253,7 +236,7 @@ index 0fea709..dd79977 100644
     ASSERTED const unsigned cdw_max = radeon_check_space(device->ws, cs->b, 4096 + 128 * (drawCount - 1));
  
     if (likely(!info->indirect_va)) {
-@@ -13794,6 +13888,8 @@ radv_before_taskmesh_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_
+@@ -13819,6 +13903,8 @@ radv_before_taskmesh_draw(struct radv_cmd_buffer *cmd_buffer, const struct radv_
     const struct radv_physical_device *pdev = radv_device_physical(device);
     struct radv_cmd_stream *cs = cmd_buffer->cs;
  
@@ -262,7 +245,7 @@ index 0fea709..dd79977 100644
     /* For direct draws, this makes sure we don't draw anything.
      * For indirect draws, this is necessary to prevent a GPU hang (on MEC version < 100).
      */
-@@ -14803,6 +14899,8 @@ radv_emit_rt_stack_size(struct radv_cmd_buffer *cmd_buffer)
+@@ -14828,6 +14914,8 @@ radv_emit_rt_stack_size(struct radv_cmd_buffer *cmd_buffer)
  static void
  radv_before_dispatch(struct radv_cmd_buffer *cmd_buffer, struct radv_compute_pipeline *pipeline)
  {
@@ -272,32 +255,30 @@ index 0fea709..dd79977 100644
     struct radv_cmd_stream *cs = radv_get_pm4_cs(cmd_buffer);
     const struct radv_physical_device *pdev = radv_device_physical(device);
 diff --git a/src/amd/vulkan/radv_cmd_buffer.h b/src/amd/vulkan/radv_cmd_buffer.h
-index 1781807..d0c4fd3 100644
+index 1781807..f908ee5 100644
 --- a/src/amd/vulkan/radv_cmd_buffer.h
 +++ b/src/amd/vulkan/radv_cmd_buffer.h
 @@ -237,6 +237,9 @@ struct radv_rendering_state {
     bool gfx12_has_hiz;
     struct radv_attachment vrs_att;
     VkExtent2D vrs_texel_size;
-+   /* What radv_emit_rendering_area writes besides the area. */
++   /* For radv_emit_rendering_area(). */
 +   VkExtent2D screen_scissor;
 +   bool dcc_disable_constant_encode_ac01;
  };
  
  struct radv_push_descriptor_set {
 diff --git a/src/amd/vulkan/radv_radeon_winsys.h b/src/amd/vulkan/radv_radeon_winsys.h
-index 632f8c9..46e11d5 100644
+index 632f8c9..0612d2d 100644
 --- a/src/amd/vulkan/radv_radeon_winsys.h
 +++ b/src/amd/vulkan/radv_radeon_winsys.h
-@@ -305,6 +305,14 @@ struct radeon_winsys {
+@@ -305,6 +305,12 @@ struct radeon_winsys {
  
     void (*cs_pad)(struct ac_cmdbuf *cs, unsigned leave_dw_space);
  
-+   /* Only for a winsys whose submissions may each start from reset GPU state
-+    * and hold a limited number of words (the PlayStation 4's); NULL otherwise.
-+    * cs_split_due says the stream should start a new submission before its
-+    * next draw or dispatch, and cs_split marks that point: the command buffer
-+    * re-emits all of its state after it. */
++   /* Optional (PS4): cs_split_due() asks for the stream to be split before the next draw or
++    * dispatch, cs_split() marks the split. The command buffer re-emits all its state after it.
++    */
 +   bool (*cs_split_due)(struct ac_cmdbuf *cs);
 +   void (*cs_split)(struct ac_cmdbuf *cs);
 +
