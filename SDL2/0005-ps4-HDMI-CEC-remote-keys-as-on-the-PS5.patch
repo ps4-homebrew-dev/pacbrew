@@ -1,0 +1,226 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sat, 24 Oct 2026 15:25:16 +0000
+Subject: [PATCH] ps4: HDMI-CEC remote keys, as on the PS5
+
+The TV's remote over HDMI-CEC ("Enable HDMI Device Link" in the system
+settings) is read on libScePad's remote control port, as the PS5's SDL
+does. The arrows, X, O and OPTIONS come as the controller's buttons, as
+before; every other key comes as a CEC key code in the first byte of the
+pad state's device unique data (what the PS5's SDL reads as unknown[3]:
+the two structures are laid out the same). Those keys are now sent too:
+the digits, the media keys, the coloured keys (F5 to F8), subtitle, audio,
+camera and display (F1 to F4), guide (F9), channel up and down (PageUp,
+PageDown) and the others in docs/README-ps4.md, with the PS5's mappings.
+
+The remote stays a source of key events only, not a joystick. Key state
+is now kept per scancode, so a key held on the remote and the same key
+from a button (Return from X and from OK, say) are one key, and all of
+them are let go of when the remote goes away or SDL quits.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_014NnVbFpbCSXQGXsbWTgjkb
+---
+ docs/README-ps4.md            | 28 ++++++++--
+ src/video/ps4/SDL_ps4remote.c | 98 ++++++++++++++++++++++++++++-------
+ 2 files changed, 105 insertions(+), 21 deletions(-)
+
+diff --git a/docs/README-ps4.md b/docs/README-ps4.md
+index 83e632e..0ba97b8 100644
+--- a/docs/README-ps4.md
++++ b/docs/README-ps4.md
+@@ -49,9 +49,31 @@ Drivers
+   as text input on a US layout. The on-screen keyboard is the system's IME
+   dialog: `SDL_StartTextInput()` opens it, and the text typed in it is sent
+   as text input, followed by a press of Return.
+-* Remote: what a media remote reports on libScePad's remote control port as
+-  the controller's arrows, X, O and OPTIONS, as the arrow keys, Return,
+-  Escape and Menu.
++* Remote: the TV's remote over HDMI-CEC ("Enable HDMI Device Link" in the
++  system settings), or a media remote, on libScePad's remote control port,
++  gives key events (it is not a joystick):
++
++  | Remote key                 | Key                          |
++  |----------------------------|------------------------------|
++  | arrows                     | arrow keys                   |
++  | OK / enter                 | Return                       |
++  | back / return              | Escape                       |
++  | options / menu             | Menu                         |
++  | 0 to 9                     | 0 to 9                       |
++  | 11, 12 (some Japanese TVs) | Minus, Equals                |
++  | dot                        | Period                       |
++  | previous / next            | AudioPrev, AudioNext         |
++  | play, stop                 | AudioPlay, AudioStop         |
++  | play/pause                 | Space                        |
++  | pause                      | Pause                        |
++  | rewind / fast forward      | AudioRewind, AudioFastForward|
++  | context menu               | Application                  |
++  | subtitle, audio            | F1, F2                       |
++  | camera, display            | F3, F4                       |
++  | red, green, yellow, blue   | F5, F6, F7, F8               |
++  | guide                      | F9                           |
++  | channel + / -              | PageUp, PageDown             |
++  | previous channel           | Backspace                    |
+ * Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
+   or `/app0/` in a package); `SDL_GetPrefPath()` is in `/data/`.
+ * Locale: the system language. `SDL_OpenURL()` opens the web browser.
+diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
+index 39bb3ca..620067d 100644
+--- a/src/video/ps4/SDL_ps4remote.c
++++ b/src/video/ps4/SDL_ps4remote.c
+@@ -24,10 +24,12 @@
+ 
+ /* A media remote, on libScePad's remote control port, as keys.
+ 
+-   The PS4 has no HDMI-CEC remote, and its media remotes are not the
+-   PS5's: only what a remote reports as the controller's buttons is used
+-   (the arrows, X, O and OPTIONS), not the PS5's table of CEC key codes. When
+-   the port cannot be opened, there is simply no remote. */
++   This is the TV's remote over HDMI-CEC (with "Enable HDMI Device Link"
++   on), or a media remote. The arrows, X, O and OPTIONS are reported as
++   the controller's buttons; every other key is reported as a CEC key code
++   in the pad state, as on the PS5. The remote is not a joystick: it only
++   sends key events. When the port cannot be opened, there is simply no
++   remote. */
+ 
+ #include "SDL_events.h"
+ #include "../../events/SDL_keyboard_c.h"
+@@ -45,24 +47,71 @@ static const struct
+     { PS4_PAD_BUTTON_DOWN, SDL_SCANCODE_DOWN },
+     { PS4_PAD_BUTTON_LEFT, SDL_SCANCODE_LEFT },
+     { PS4_PAD_BUTTON_RIGHT, SDL_SCANCODE_RIGHT },
+-    { PS4_PAD_BUTTON_CROSS, SDL_SCANCODE_RETURN },  /* "enter" */
++    { PS4_PAD_BUTTON_CROSS, SDL_SCANCODE_RETURN },  /* "ok" */
+     { PS4_PAD_BUTTON_CIRCLE, SDL_SCANCODE_ESCAPE }, /* "back" */
+     { PS4_PAD_BUTTON_OPTIONS, SDL_SCANCODE_MENU },
+ };
+ 
++/* The CEC key code, indexed by its value; 0 is no key. */
++static const SDL_Scancode remote_key_map[] = {
++    SDL_SCANCODE_UNKNOWN,
++    SDL_SCANCODE_1, SDL_SCANCODE_2, SDL_SCANCODE_3, SDL_SCANCODE_4,
++    SDL_SCANCODE_5, SDL_SCANCODE_6, SDL_SCANCODE_7, SDL_SCANCODE_8,
++    SDL_SCANCODE_9, SDL_SCANCODE_0,
++    SDL_SCANCODE_MINUS,             /* "11", on some Japanese remotes */
++    SDL_SCANCODE_EQUALS,            /* "12", on some Japanese remotes */
++    SDL_SCANCODE_RETURN,
++    SDL_SCANCODE_UNKNOWN,           /* 14 */
++    SDL_SCANCODE_ESCAPE,            /* "back" */
++    SDL_SCANCODE_UNKNOWN,           /* 16 */
++    SDL_SCANCODE_UNKNOWN,           /* 17 */
++    SDL_SCANCODE_MENU,
++    SDL_SCANCODE_UNKNOWN,           /* 19 */
++    SDL_SCANCODE_AUDIOPREV,
++    SDL_SCANCODE_AUDIONEXT,
++    SDL_SCANCODE_AUDIOPLAY,
++    SDL_SCANCODE_AUDIOREWIND,
++    SDL_SCANCODE_AUDIOFASTFORWARD,
++    SDL_SCANCODE_AUDIOSTOP,
++    SDL_SCANCODE_PAUSE,             /* "pause" */
++    SDL_SCANCODE_APPLICATION,       /* context menu */
++    SDL_SCANCODE_UNKNOWN,           /* 28 */
++    SDL_SCANCODE_UNKNOWN,           /* 29 */
++    SDL_SCANCODE_F1,                /* "subtitle" */
++    SDL_SCANCODE_F2,                /* "audio" */
++    SDL_SCANCODE_F3,                /* "camera" */
++    SDL_SCANCODE_F4,                /* "display" */
++    SDL_SCANCODE_UNKNOWN,           /* 34 */
++    SDL_SCANCODE_UNKNOWN,           /* 35 */
++    SDL_SCANCODE_F8,                /* blue */
++    SDL_SCANCODE_F5,                /* red */
++    SDL_SCANCODE_F6,                /* green */
++    SDL_SCANCODE_F7,                /* yellow */
++    SDL_SCANCODE_PERIOD,
++    SDL_SCANCODE_PAGEUP,            /* "p+" */
++    SDL_SCANCODE_PAGEDOWN,          /* "p-" */
++    SDL_SCANCODE_BACKSPACE,         /* "prev" */
++    SDL_SCANCODE_F9,                /* "guide" */
++    SDL_SCANCODE_SPACE,             /* "play/pause" */
++};
++
++/* The CEC key code is the first byte of the pad state's device unique
++   data (the byte the PS5's SDL reads as unknown[3]: the two structures
++   are laid out the same). */
++#define PS4_REMOTE_KEY_CODE(pad) ((pad)->deviceUniqueData[0])
++
+ static int remote_handle = -1;
+-static Uint32 remote_buttons = 0;
++static Uint8 remote_keys[SDL_NUM_SCANCODES];
+ 
+-static void PS4_Remote_SetButtons(Uint32 buttons)
++static void PS4_Remote_SetKeys(const Uint8 *keys)
+ {
+-    Uint32 changed = remote_buttons ^ buttons;
+     int i;
+ 
+-    remote_buttons = buttons;
+-    for (i = 0; i < (int)SDL_arraysize(remote_button_map); i++) {
+-        if (changed & remote_button_map[i].button) {
+-            SDL_SendVirtualKeyboardKey((buttons & remote_button_map[i].button) ? SDL_PRESSED : SDL_RELEASED,
+-                                       remote_button_map[i].scancode);
++    for (i = 0; i < SDL_NUM_SCANCODES; i++) {
++        if (keys[i] != remote_keys[i]) {
++            remote_keys[i] = keys[i];
++            SDL_SendVirtualKeyboardKey(keys[i] ? SDL_PRESSED : SDL_RELEASED,
++                                       (SDL_Scancode)i);
+         }
+     }
+ }
+@@ -74,7 +123,7 @@ int PS4_Remote_Init(void)
+     if (remote_handle >= 0) {
+         return 0;
+     }
+-    remote_buttons = 0;
++    SDL_zeroa(remote_keys);
+ 
+     if (PS4_InitPad() < 0) {
+         return -1;
+@@ -94,8 +143,9 @@ int PS4_Remote_Init(void)
+ 
+ void PS4_Remote_PumpEvents(void)
+ {
++    Uint8 keys[SDL_NUM_SCANCODES];
+     PS4_PadData pad;
+-    Uint32 buttons = 0;
++    Uint8 code;
+     int i;
+ 
+     if (remote_handle < 0) {
+@@ -103,19 +153,31 @@ void PS4_Remote_PumpEvents(void)
+     }
+ 
+     /* On a read error or with no remote, everything is let go of. */
++    SDL_zeroa(keys);
+     SDL_zero(pad);
+     if (scePadReadState(remote_handle, &pad) == 0 && pad.connected) {
+         for (i = 0; i < (int)SDL_arraysize(remote_button_map); i++) {
+-            buttons |= pad.buttons & remote_button_map[i].button;
++            if (pad.buttons & remote_button_map[i].button) {
++                keys[remote_button_map[i].scancode] = 1;
++            }
++        }
++
++        code = PS4_REMOTE_KEY_CODE(&pad);
++        if (code < SDL_arraysize(remote_key_map) &&
++            remote_key_map[code] != SDL_SCANCODE_UNKNOWN) {
++            keys[remote_key_map[code]] = 1;
+         }
+     }
+ 
+-    PS4_Remote_SetButtons(buttons);
++    PS4_Remote_SetKeys(keys);
+ }
+ 
+ void PS4_Remote_Quit(void)
+ {
+-    PS4_Remote_SetButtons(0);
++    Uint8 keys[SDL_NUM_SCANCODES];
++
++    SDL_zeroa(keys);
++    PS4_Remote_SetKeys(keys);
+ 
+     if (remote_handle >= 0) {
+         scePadClose(remote_handle);
+-- 
+2.43.0
+
