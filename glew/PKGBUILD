@@ -1,0 +1,49 @@
+pkgname=ps4-homebrew-glew
+pkgver=2.3.1
+pkgrel=1
+pkgdesc="The OpenGL Extension Wrangler Library"
+arch=('any')
+url="https://github.com/nigels-com/glew"
+license=('custom')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/nigels-com/glew/releases/download/glew-${pkgver}/glew-${pkgver}.tgz")
+sha256sums=('b64790f94b926acd7e8f84c5d6000a86cb43967bd1e688b03089079799c9e889')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-mesa')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd glew-${pkgver}
+
+    # GLEW_EGL: resolve entry points through eglGetProcAddress, which is
+    # what Mesa on the PS4 (EGL on the videoout platform) provides.
+    ${CMAKE} -S build/cmake -B builddir \
+	     -DCMAKE_BUILD_TYPE=Release \
+	     -DBUILD_SHARED_LIBS=OFF \
+	     -DGLEW_EGL=YES \
+	     -DGLEW_X11=NO \
+	     -DBUILD_UTILS=NO
+    ${CMAKE} --build builddir --target glew_s
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd glew-${pkgver}
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${CMAKE} --install builddir
+
+    # glew.h includes <GL/glu.h> unless GLEW_NO_GLU is defined, and Mesa
+    # does not ship GLU. Define it in the installed header so consumers
+    # do not have to, unless a GLU is present in the sysroot.
+    if [ ! -f "${SYSROOT}/usr/include/GL/glu.h" ]; then
+	sed -i '0,/^\/\* -* GLU -* \*\//s//&\n#ifndef GLEW_NO_GLU\n#  define GLEW_NO_GLU\n#endif/' \
+	    "${DESTDIR}/usr/include/GL/glew.h"
+    fi
+}
