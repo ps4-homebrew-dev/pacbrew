@@ -11,7 +11,7 @@ PKGS=(sdk openlibm zlib libcxx bzip2 dht enet expat faad2
       libtheora libutp libvorbis libyuv lz4 miniupnpc mpg123 dav1d
       json-c libevent libjpeg-turbo libquickjs libvpx libwebp lua luajit
       openssl curl libssh libssh2 opus libsndfile sqlite tinyxml2 xz
-      libxml2 yaml-cpp zstd libarchive libzip mesa vulkan-headers ffmpeg
+      libxml2 yaml-cpp zstd libarchive libzip mesa glu glew vulkan-headers ffmpeg
       SDL2 SDL2_ttf SDL2_net SDL2_mixer SDL2_image SDL2_gfx SDL2_kitchensink
       rmlui libplacebo mpv)
 
