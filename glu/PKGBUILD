@@ -1,0 +1,33 @@
+pkgname=ps4-homebrew-glu
+pkgver=9.0.3
+pkgrel=1
+pkgdesc="Mesa OpenGL utility library"
+arch=('any')
+url="https://gitlab.freedesktop.org/mesa/glu"
+license=('SGI-B-2.0' 'MIT')
+options=(!strip !libtool staticlibs)
+source=("https://mesa.freedesktop.org/archive/glu/glu-${pkgver}.tar.xz")
+sha256sums=('bd43fe12f374b1192eb15fe20e45ff456b9bc26ab57f0eee919f96ca0f8a330f')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-mesa')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd glu-${pkgver}
+
+    ${MESON} setup builddir -Dgl_provider=gl
+    ${MESON} compile -vC builddir
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd glu-${pkgver}
+
+    ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
+}
