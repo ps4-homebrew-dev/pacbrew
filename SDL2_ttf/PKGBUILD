@@ -36,4 +36,13 @@ package() {
 
     export DESTDIR="${pkgdir}/${SYSROOT}"
     ${MAKE} install
+
+    # Autotools builds with --disable-shared only define SDL2_ttf::SDL2_ttf-static.
+    # Provide SDL2_ttf::SDL2_ttf too, like SDL2's own config does for static-only builds.
+    cat >> "${DESTDIR}/usr/lib/cmake/SDL2_ttf/sdl2_ttf-config.cmake" <<'CMAKE_EOF'
+
+if(TARGET SDL2_ttf::SDL2_ttf-static AND NOT TARGET SDL2_ttf::SDL2_ttf)
+  add_library(SDL2_ttf::SDL2_ttf ALIAS SDL2_ttf::SDL2_ttf-static)
+endif()
+CMAKE_EOF
 }

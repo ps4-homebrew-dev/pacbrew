@@ -33,4 +33,13 @@ package() {
 
     export DESTDIR="${pkgdir}/${SYSROOT}"
     ${MAKE} install
+
+    # Autotools builds with --disable-shared only define SDL2_net::SDL2_net-static.
+    # Provide SDL2_net::SDL2_net too, like SDL2's own config does for static-only builds.
+    cat >> "${DESTDIR}/usr/lib/cmake/SDL2_net/sdl2_net-config.cmake" <<'CMAKE_EOF'
+
+if(TARGET SDL2_net::SDL2_net-static AND NOT TARGET SDL2_net::SDL2_net)
+  add_library(SDL2_net::SDL2_net ALIAS SDL2_net::SDL2_net-static)
+endif()
+CMAKE_EOF
 }

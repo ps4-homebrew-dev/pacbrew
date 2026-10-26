@@ -36,4 +36,13 @@ package() {
 
     export DESTDIR="${pkgdir}/${SYSROOT}"
     ${MAKE} install
+
+    # Autotools builds with --disable-shared only define SDL2_image::SDL2_image-static.
+    # Provide SDL2_image::SDL2_image too, like SDL2's own config does for static-only builds.
+    cat >> "${DESTDIR}/usr/lib/cmake/SDL2_image/sdl2_image-config.cmake" <<'CMAKE_EOF'
+
+if(TARGET SDL2_image::SDL2_image-static AND NOT TARGET SDL2_image::SDL2_image)
+  add_library(SDL2_image::SDL2_image ALIAS SDL2_image::SDL2_image-static)
+endif()
+CMAKE_EOF
 }

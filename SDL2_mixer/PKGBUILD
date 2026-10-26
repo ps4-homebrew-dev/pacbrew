@@ -32,4 +32,13 @@ package() {
 
     export DESTDIR="${pkgdir}/${SYSROOT}"
     ${MAKE} install
+
+    # Autotools builds with --disable-shared only define SDL2_mixer::SDL2_mixer-static.
+    # Provide SDL2_mixer::SDL2_mixer too, like SDL2's own config does for static-only builds.
+    cat >> "${DESTDIR}/usr/lib/cmake/SDL2_mixer/sdl2_mixer-config.cmake" <<'CMAKE_EOF'
+
+if(TARGET SDL2_mixer::SDL2_mixer-static AND NOT TARGET SDL2_mixer::SDL2_mixer)
+  add_library(SDL2_mixer::SDL2_mixer ALIAS SDL2_mixer::SDL2_mixer-static)
+endif()
+CMAKE_EOF
 }
