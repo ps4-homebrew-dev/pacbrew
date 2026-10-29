@@ -22,7 +22,7 @@ build() {
     source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
     cd openssl-$pkgver
 
-    ./Configure BSD-x86_64 no-tests no-apps no-shared -static --prefix="${PREFIX}"
+    ./Configure BSD-x86_64 no-tests no-apps no-shared no-module --prefix="${PREFIX}"
     ${MAKE} build_sw
 }
 
