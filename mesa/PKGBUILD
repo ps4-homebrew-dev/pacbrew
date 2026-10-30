@@ -1,6 +1,6 @@
 pkgname=ps4-homebrew-mesa
 pkgver=26.2.0
-pkgrel=11
+pkgrel=12
 pkgdesc="Open-source Vulkan and OpenGL drivers for the PS4 (RADV, VK_KHR_display on VideoOut; zink, EGL, OpenGL and OpenGL ES on it)"
 url="https://www.mesa3d.org/"
 arch=('any')
@@ -30,7 +30,7 @@ sha256sums=('efd4bb08cdb7c365a812cd4e6c9202ab55b2f22cdcd13c7d6c4f9647b799a4ef'
 	    'd0fd9e36e07c6d9229a945b0679f669c84a6159c80d2b43ba4b143edc04bc6a5'
 	    '7d31857f4eb2c8f174275c91f777ca8d76c3e1586feed861b51df963c604eb87'
 	    'dfa925094b19797021c4462625406903d082d8e37256b647369c085755be87c4'
-	    '2b547a4ef9b94d7bb4937832bea8eeff9542c0ab6753d0af9c3a255ed2410818'
+	    'f8f00193a17050ebf2445fe0d271aedc5ba3c198774d8c4fc4f8ea3b09e6719e'
 	    '1c9d2f45b9406724625954aae017b8cdff261f1abe9b670406c10dbf18fe850c'
 	    '0457a51a62f1292bafd168b762e6176219a2aa1244ea83a531cb36ce5d1d8e5b'
 	    'e196ea1a48b95af9501fb5a921a817ef8e0679ac74be0db7bdce3119f2d5f03e'

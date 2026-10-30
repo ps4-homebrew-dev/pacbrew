@@ -12,7 +12,8 @@ described as a Bonaire):
 - command streams are copied into a ring and submitted as DCBs with
   sceGnmSubmitCommandBuffers, ending with an EOP that writes a sequence
   number to a completion marker;
-- the shader cache defaults to /data/radv-shader-cache.
+- the shader cache defaults to $XDG_CACHE_HOME/mesa_shader_cache_db,
+  with XDG_CACHE_HOME set by the SDK's crt.
 
 There is no Vulkan loader on the PS4, so RADV is built as libvulkan.so.1
 and exports the Vulkan API itself (vk_exports_gen.py), with a vulkan.pc.
@@ -1557,8 +1558,8 @@ index 0000000..060a949
 +static void
 +radv_ps4_platform_once(void)
 +{
-+   /* /app0 is read-only, so the shader cache goes to /data, unless the title says otherwise. */
-+   setenv("MESA_SHADER_CACHE_DIR", "/data/radv-shader-cache", 0);
++   /* The shader cache is in $XDG_CACHE_HOME, which the SDK's crt sets (/data is not always
++    * mounted), unless the title sets MESA_SHADER_CACHE_DIR. */
 +   setenv("MESA_DISK_CACHE_DATABASE", "1", 0);
 +
 +   /* The largest window the kernel gives; RADV's 32-bit buffers fit in far less than 4 GiB. */
