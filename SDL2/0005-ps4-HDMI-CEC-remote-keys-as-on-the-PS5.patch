@@ -26,7 +26,7 @@ Claude-Session: https://claude.ai/code/session_014NnVbFpbCSXQGXsbWTgjkb
  2 files changed, 105 insertions(+), 21 deletions(-)
 
 diff --git a/docs/README-ps4.md b/docs/README-ps4.md
-index 83e632e..0ba97b8 100644
+index 6d71b80..0ece825 100644
 --- a/docs/README-ps4.md
 +++ b/docs/README-ps4.md
 @@ -49,9 +49,31 @@ Drivers
@@ -62,8 +62,8 @@ index 83e632e..0ba97b8 100644
 +  | channel + / -              | PageUp, PageDown             |
 +  | previous channel           | Backspace                    |
  * Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
-   or `/app0/` in a package); `SDL_GetPrefPath()` is in `/data/`.
- * Locale: the system language. `SDL_OpenURL()` opens the web browser.
+   or `/app0/` in a package); `SDL_GetPrefPath()` is in `$XDG_DATA_HOME`,
+   which the SDK's crt sets before `main()`.
 diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
 index 39bb3ca..620067d 100644
 --- a/src/video/ps4/SDL_ps4remote.c

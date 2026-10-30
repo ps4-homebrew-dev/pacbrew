@@ -17,7 +17,8 @@ and dlopen(), as the SDK's crt loads the ones a program links. SDL links
 libScePad, libSceUserService, libSceSystemService and libSceSysmodule.
 
 - Filesystem: the base path is the program's folder, from argv[0], or a
-  package's /app0/; the preference path is in /data/.
+  package's /app0/; the preference path is in $XDG_DATA_HOME
+  (or $HOME/.local/share), which the SDK's crt sets.
 - Locale: the system language (sceSystemServiceParamGetInt()).
 - Misc: SDL_OpenURL() opens the web browser.
 - Timers are the Unix ones, on clock_gettime().
@@ -33,10 +34,10 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  src/core/ps4/SDL_ps4.c                 | 146 ++++++++++++++++++++++
  src/core/ps4/SDL_ps4.h                 |  74 +++++++++++
  src/dynapi/SDL_dynapi.h                |   2 +
- src/filesystem/ps4/SDL_sysfilesystem.c | 164 +++++++++++++++++++++++++
+ src/filesystem/ps4/SDL_sysfilesystem.c | 178 +++++++++++++++++++++++++
  src/locale/ps4/SDL_syslocale.c         |  77 ++++++++++++
  src/misc/ps4/SDL_sysurl.c              |  43 +++++++
- 11 files changed, 570 insertions(+), 4 deletions(-)
+ 11 files changed, 584 insertions(+), 4 deletions(-)
  create mode 100644 src/core/ps4/SDL_ps4.c
  create mode 100644 src/core/ps4/SDL_ps4.h
  create mode 100644 src/filesystem/ps4/SDL_sysfilesystem.c
@@ -441,10 +442,10 @@ index b5c9cbbe3..ab38b4146 100644
  #endif
 diff --git a/src/filesystem/ps4/SDL_sysfilesystem.c b/src/filesystem/ps4/SDL_sysfilesystem.c
 new file mode 100644
-index 000000000..c772b7c62
+index 000000000..4d0207c4c
 --- /dev/null
 +++ b/src/filesystem/ps4/SDL_sysfilesystem.c
-@@ -0,0 +1,164 @@
+@@ -0,0 +1,178 @@
 +/*
 +  Simple DirectMedia Layer
 +  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
@@ -473,8 +474,8 @@ index 000000000..c772b7c62
 +/* System dependent filesystem routines                                */
 +
 +/* The base path is the folder of the program: the one its path was given
-+   in, or a package's /app0/. The preference path is in /data/, where
-+   homebrew keeps its files. */
++   in, or a package's /app0/. The preference path is in $XDG_DATA_HOME,
++   which the SDK's crt sets before main() (/data is not always mounted). */
 +
 +#include <errno.h>
 +#include <limits.h>
@@ -486,7 +487,6 @@ index 000000000..c772b7c62
 +#include "SDL_filesystem.h"
 +
 +#define PS4_APP_FOLDER  "/app0/"
-+#define PS4_DATA_FOLDER "/data/"
 +
 +/* libkernel: the arguments the program was started with */
 +extern const char **getargv(void);
@@ -562,6 +562,9 @@ index 000000000..c772b7c62
 +
 +char *SDL_GetPrefPath(const char *org, const char *app)
 +{
++    /* As on Unix: $XDG_DATA_HOME, or else $HOME/.local/share. */
++    const char *envr = SDL_getenv("XDG_DATA_HOME");
++    const char *append = "/";
 +    char *retval;
 +    char *ptr;
 +    size_t len;
@@ -574,7 +577,19 @@ index 000000000..c772b7c62
 +        org = "";
 +    }
 +
-+    len = SDL_strlen(PS4_DATA_FOLDER) + SDL_strlen(org) + SDL_strlen(app) + 3;
++    if (!envr || !*envr) {
++        envr = SDL_getenv("HOME");
++        if (!envr || !*envr) {
++            SDL_SetError("neither XDG_DATA_HOME nor HOME environment is set");
++            return NULL;
++        }
++        append = "/.local/share/";
++    }
++    if (envr[SDL_strlen(envr) - 1] == '/') {
++        append += 1;
++    }
++
++    len = SDL_strlen(envr) + SDL_strlen(append) + SDL_strlen(org) + SDL_strlen(app) + 3;
 +    retval = (char *)SDL_malloc(len);
 +    if (!retval) {
 +        SDL_OutOfMemory();
@@ -582,9 +597,9 @@ index 000000000..c772b7c62
 +    }
 +
 +    if (*org) {
-+        SDL_snprintf(retval, len, "%s%s/%s/", PS4_DATA_FOLDER, org, app);
++        SDL_snprintf(retval, len, "%s%s%s/%s/", envr, append, org, app);
 +    } else {
-+        SDL_snprintf(retval, len, "%s%s/", PS4_DATA_FOLDER, app);
++        SDL_snprintf(retval, len, "%s%s%s/", envr, append, app);
 +    }
 +
 +    for (ptr = retval + 1; *ptr; ptr++) {

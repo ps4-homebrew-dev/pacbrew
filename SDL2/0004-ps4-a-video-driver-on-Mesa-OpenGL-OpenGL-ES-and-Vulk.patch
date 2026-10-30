@@ -40,7 +40,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
 ---
  CMakeLists.txt                  |  29 +-
- docs/README-ps4.md              |  60 ++++
+ docs/README-ps4.md              |  61 +++++
  include/SDL_config.h.cmake      |   1 +
  src/video/SDL_egl.c             |   8 +
  src/video/SDL_sysvideo.h        |   1 +
@@ -54,7 +54,7 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  src/video/ps4/SDL_ps4video.h    |  58 ++++
  src/video/ps4/SDL_ps4vulkan.c   | 146 ++++++++++
  src/video/ps4/SDL_ps4vulkan.h   |  42 +++
- 15 files changed, 1335 insertions(+), 1 deletion(-)
+ 15 files changed, 1336 insertions(+), 1 deletion(-)
  create mode 100644 docs/README-ps4.md
  create mode 100644 src/video/ps4/SDL_ps4keyboard.c
  create mode 100644 src/video/ps4/SDL_ps4keyboard.h
@@ -115,10 +115,10 @@ index 2da6b370e..f308f49e0 100644
  
 diff --git a/docs/README-ps4.md b/docs/README-ps4.md
 new file mode 100644
-index 000000000..83e632eb0
+index 000000000..6d71b8059
 --- /dev/null
 +++ b/docs/README-ps4.md
-@@ -0,0 +1,60 @@
+@@ -0,0 +1,61 @@
 +PS4
 +===
 +SDL port for the Sony PlayStation 4, built with the
@@ -174,7 +174,8 @@ index 000000000..83e632eb0
 +  the controller's arrows, X, O and OPTIONS, as the arrow keys, Return,
 +  Escape and Menu.
 +* Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
-+  or `/app0/` in a package); `SDL_GetPrefPath()` is in `/data/`.
++  or `/app0/` in a package); `SDL_GetPrefPath()` is in `$XDG_DATA_HOME`,
++  which the SDK's crt sets before `main()`.
 +* Locale: the system language. `SDL_OpenURL()` opens the web browser.
 +
 +libSceAudioOut, libSceKeyboard and libSceImeDialog have no link stubs in the
