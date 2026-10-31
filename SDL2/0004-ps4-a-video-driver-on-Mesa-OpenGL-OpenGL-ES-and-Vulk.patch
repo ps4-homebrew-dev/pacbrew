@@ -40,7 +40,7 @@ Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
 ---
  CMakeLists.txt                  |  29 +-
- docs/README-ps4.md              |  61 +++++
+ docs/README-ps4.md              |  88 ++++++
  include/SDL_config.h.cmake      |   1 +
  src/video/SDL_egl.c             |   8 +
  src/video/SDL_sysvideo.h        |   1 +
@@ -54,7 +54,7 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  src/video/ps4/SDL_ps4video.h    |  58 ++++
  src/video/ps4/SDL_ps4vulkan.c   | 146 ++++++++++
  src/video/ps4/SDL_ps4vulkan.h   |  42 +++
- 15 files changed, 1336 insertions(+), 1 deletion(-)
+ 15 files changed, 1363 insertions(+), 1 deletion(-)
  create mode 100644 docs/README-ps4.md
  create mode 100644 src/video/ps4/SDL_ps4keyboard.c
  create mode 100644 src/video/ps4/SDL_ps4keyboard.h
@@ -67,7 +67,7 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  create mode 100644 src/video/ps4/SDL_ps4vulkan.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 2da6b370e..f308f49e0 100644
+index bbe33f703..9fe8febde 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -490,7 +490,7 @@ set_option(SDL_WASAPI              "Use the Windows WASAPI audio driver" ${WINDO
@@ -79,7 +79,7 @@ index 2da6b370e..f308f49e0 100644
  set_option(SDL_METAL               "Enable Metal support" ${APPLE})
  set_option(SDL_KMSDRM              "Use KMS DRM video driver" ${UNIX_SYS})
  dep_option(SDL_KMSDRM_SHARED       "Dynamically load KMS DRM support" ON "SDL_KMSDRM" OFF)
-@@ -1525,6 +1525,33 @@ elseif(PS4)
+@@ -1531,6 +1531,33 @@ elseif(PS4)
        set(HAVE_CLOCK_GETTIME 1)
      endif()
    endif()
@@ -115,10 +115,10 @@ index 2da6b370e..f308f49e0 100644
  
 diff --git a/docs/README-ps4.md b/docs/README-ps4.md
 new file mode 100644
-index 000000000..6d71b8059
+index 000000000..2161e8e42
 --- /dev/null
 +++ b/docs/README-ps4.md
-@@ -0,0 +1,61 @@
+@@ -0,0 +1,88 @@
 +PS4
 +===
 +SDL port for the Sony PlayStation 4, built with the
@@ -140,8 +140,35 @@ index 000000000..6d71b8059
 +   ${MAKE} -C build install DESTDIR="${SYSROOT}"
 +```
 +SDL is a static library; link it with `orbis-pkg-config --libs sdl2`, which
-+adds the system libraries it calls (libScePad, libSceUserService,
-+libSceSystemService and libSceSysmodule).
++adds SDL2main and the system libraries SDL calls (libScePad,
++libSceUserService, libSceSystemService, libSceSysmodule and
++libSceAppContent).
++
++SDL2main
++--------
++SDL2main provides `main()`; the program's `main()` becomes `SDL_main()`
++(see `SDL_main.h`). Before the program starts, it sets the XDG base
++directories that are not set already, and creates them:
++
++| Variable          | Folder              |
++|-------------------|---------------------|
++| `XDG_CACHE_HOME`  | `<folder>/.cache`   |
++| `XDG_CONFIG_HOME` | `<folder>/.config`  |
++| `XDG_DATA_HOME`   | `<folder>/.data`    |
++| `XDG_STATE_HOME`  | `<folder>/.state`   |
++
++`<folder>` is `/temp0`, the title's temporary data, when libSceAppContent
++can mount it, which it only does for a game application (SFO category
++`gd`). Otherwise it is `common_temp`, which all homebrew shares. `/data`
++is not used, as it is not always mounted.
++
++When the program exits, by returning from `main()` or calling `exit()`, it
++goes back to the home screen (`sceSystemServiceLoadExec("exit", NULL)`),
++after the `atexit()` handlers registered while it ran.
++
++With `SDL_MAIN_HANDLED`, or without SDL2main, the program sets the XDG base
++directories itself; `SDL_GetPrefPath()` fails when neither `XDG_DATA_HOME`
++nor `HOME` is set.
 +
 +Drivers
 +-------
@@ -175,7 +202,7 @@ index 000000000..6d71b8059
 +  Escape and Menu.
 +* Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
 +  or `/app0/` in a package); `SDL_GetPrefPath()` is in `$XDG_DATA_HOME`,
-+  which the SDK's crt sets before `main()`.
++  which SDL2main sets up before `main()`.
 +* Locale: the system language. `SDL_OpenURL()` opens the web browser.
 +
 +libSceAudioOut, libSceKeyboard and libSceImeDialog have no link stubs in the

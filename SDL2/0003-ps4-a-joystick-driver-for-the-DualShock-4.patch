@@ -30,10 +30,10 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  create mode 100644 src/joystick/ps4/SDL_ps4joystick.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 47c4b663c..2da6b370e 100644
+index d099c8ad4..bbe33f703 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1500,6 +1500,12 @@ elseif(PS4)
+@@ -1506,6 +1506,12 @@ elseif(PS4)
      list(APPEND SOURCE_FILES ${PS4_FILESYSTEM_SOURCES})
      set(HAVE_SDL_FILESYSTEM TRUE)
    endif()

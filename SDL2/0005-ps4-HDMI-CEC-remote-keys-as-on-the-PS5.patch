@@ -26,10 +26,10 @@ Claude-Session: https://claude.ai/code/session_014NnVbFpbCSXQGXsbWTgjkb
  2 files changed, 105 insertions(+), 21 deletions(-)
 
 diff --git a/docs/README-ps4.md b/docs/README-ps4.md
-index 6d71b80..0ece825 100644
+index 2161e8e..230eaa8 100644
 --- a/docs/README-ps4.md
 +++ b/docs/README-ps4.md
-@@ -49,9 +49,31 @@ Drivers
+@@ -76,9 +76,31 @@ Drivers
    as text input on a US layout. The on-screen keyboard is the system's IME
    dialog: `SDL_StartTextInput()` opens it, and the text typed in it is sent
    as text input, followed by a press of Return.
@@ -63,7 +63,7 @@ index 6d71b80..0ece825 100644
 +  | previous channel           | Backspace                    |
  * Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
    or `/app0/` in a package); `SDL_GetPrefPath()` is in `$XDG_DATA_HOME`,
-   which the SDK's crt sets before `main()`.
+   which SDL2main sets up before `main()`.
 diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
 index 39bb3ca..620067d 100644
 --- a/src/video/ps4/SDL_ps4remote.c

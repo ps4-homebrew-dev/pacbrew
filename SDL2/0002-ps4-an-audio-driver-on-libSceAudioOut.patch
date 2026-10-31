@@ -23,12 +23,12 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  create mode 100644 src/audio/ps4/SDL_ps4audio.h
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index 690f9a9ff..47c4b663c 100644
+index 353cc5800..d099c8ad4 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
-@@ -1488,6 +1488,12 @@ elseif(PS4)
-   # The system libraries SDL links; the others are loaded when used.
-   list(APPEND EXTRA_LIBS ScePad SceUserService SceSystemService SceSysmodule)
+@@ -1494,6 +1494,12 @@ elseif(PS4)
+     list(INSERT SDL_LIBS 0 "-lSDL2main")
+   endif()
  
 +  if(SDL_AUDIO)
 +    set(SDL_AUDIO_DRIVER_PS4 1)

@@ -1,6 +1,6 @@
 pkgname=ps4-homebrew-sdl2
 pkgver=2.32.10
-pkgrel=4
+pkgrel=5
 pkgdesc='A library for portable low-level access to video, audio, joysticks... (PS4: OpenGL, OpenGL ES and Vulkan on Mesa)'
 arch=('any')
 url='https://libsdl.org'
@@ -11,15 +11,13 @@ source=("SDL::git+https://github.com/libsdl-org/SDL.git#tag=release-${pkgver}"
 	'0002-ps4-an-audio-driver-on-libSceAudioOut.patch'
 	'0003-ps4-a-joystick-driver-for-the-DualShock-4.patch'
 	'0004-ps4-a-video-driver-on-Mesa-OpenGL-OpenGL-ES-and-Vulk.patch'
-	'0005-ps4-HDMI-CEC-remote-keys-as-on-the-PS5.patch'
-	'0006-ps4-SDL2main-which-sets-up-the-XDG-directories-and-ex.patch')
+	'0005-ps4-HDMI-CEC-remote-keys-as-on-the-PS5.patch')
 sha256sums=('SKIP'
-	    '8b96a84bff92fb4393491a55817cdeb1e621c896f752e443c425ba178a7fbeed'
-	    '3474441b9b99dabb977d1308ec31dfeacefdb8f0840f93d6e92e2f67edc2ebd4'
-	    '469486a6ca90b1bcf050878f961da2dcc2a4f54022089529d2551eb7f9e57d78'
-	    '932006f6ba9c7850a4508ce78f2ab01d22953f6df098302c3f52c38934228c67'
-	    '6be5e14aad2e2860916479d888204e1e0d75f8f5b9b15d25eec5857850381412'
-	    'e1efdf07b5de0ea333eb972317b6e5eacc817848ece1cc8238790350f8155464')
+	    '79fb66396834d1f82c169cbf1e142e3be4b34efbbf6ba8286e5b6ff5b16b6505'
+	    '61b2153dee5b1556919fb71d1e07c63db53eff082565615999e940fa87fef7da'
+	    '1e928d2da67f1dea2ca6954523c02cc04ac7803edc60157c3a8058276b7d54b7'
+	    'ee6b594145b420a5a19e3d600b920cd0abe7e377c97a3ea73d8330e5c3a6d1e1'
+	    '57e5f1257420824ab87ca8121b6133d5018d70440f29e9ac0e8174afbcc4d1b0')
 groups=('ps4-homebrew-dev')
 makedepends=('ps4-homebrew-sdk')
 # OpenGL, OpenGL ES and Vulkan are Mesa's libEGL.so.1, libGLESv2.so.2 and

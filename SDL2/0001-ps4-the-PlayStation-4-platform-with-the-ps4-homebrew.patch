@@ -14,21 +14,29 @@ src/core/ps4 has what the PS4 drivers share: initializing libSceUserService
 and libScePad once, and loading the system libraries the SDK has no link
 stubs for (audio out, the keyboard, the IME dialog) with libSceSysmodule
 and dlopen(), as the SDK's crt loads the ones a program links. SDL links
-libScePad, libSceUserService, libSceSystemService and libSceSysmodule.
+libScePad, libSceUserService, libSceSystemService, libSceSysmodule and
+libSceAppContent.
 
+- SDL2main: main() sets the XDG base directories that are not set, in
+  /temp0 (the title's temporary data, which only a game application has)
+  when libSceAppContent can mount it, otherwise in common_temp, which all
+  homebrew shares; /data is not always mounted. When the program exits,
+  it goes back to the home screen (sceSystemServiceLoadExec("exit")).
 - Filesystem: the base path is the program's folder, from argv[0], or a
-  package's /app0/; the preference path is in $XDG_DATA_HOME
-  (or $HOME/.local/share), which the SDK's crt sets.
+  package's /app0/; the preference path is in $XDG_DATA_HOME (or
+  $HOME/.local/share), which SDL2main sets.
 - Locale: the system language (sceSystemServiceParamGetInt()).
 - Misc: SDL_OpenURL() opens the web browser.
 - Timers are the Unix ones, on clock_gettime().
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
 Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
+Claude-Session: https://claude.ai/code/session_01EVpxQhSVskRCNVLPwL6rJM
 ---
- CMakeLists.txt                         |  54 +++++++-
+ CMakeLists.txt                         |  63 ++++++++-
  cmake/sdlchecks.cmake                  |   4 +
  include/SDL_config.h.cmake             |   1 +
+ include/SDL_main.h                     |   9 ++
  include/SDL_platform.h                 |   5 +
  src/SDL.c                              |   4 +-
  src/core/ps4/SDL_ps4.c                 | 146 ++++++++++++++++++++++
@@ -36,16 +44,18 @@ Claude-Session: https://claude.ai/code/session_018H1dHz3GdyTDdPL1TtZf9k
  src/dynapi/SDL_dynapi.h                |   2 +
  src/filesystem/ps4/SDL_sysfilesystem.c | 178 +++++++++++++++++++++++++
  src/locale/ps4/SDL_syslocale.c         |  77 ++++++++++++
+ src/main/ps4/SDL_ps4_main.c            | 168 +++++++++++++++++++++++
  src/misc/ps4/SDL_sysurl.c              |  43 +++++++
- 11 files changed, 584 insertions(+), 4 deletions(-)
+ 13 files changed, 770 insertions(+), 4 deletions(-)
  create mode 100644 src/core/ps4/SDL_ps4.c
  create mode 100644 src/core/ps4/SDL_ps4.h
  create mode 100644 src/filesystem/ps4/SDL_sysfilesystem.c
  create mode 100644 src/locale/ps4/SDL_syslocale.c
+ create mode 100644 src/main/ps4/SDL_ps4_main.c
  create mode 100644 src/misc/ps4/SDL_sysurl.c
 
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index e45b53e20..690f9a9ff 100644
+index e45b53e20..353cc5800 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -163,7 +163,7 @@ endif()
@@ -88,7 +98,7 @@ index e45b53e20..690f9a9ff 100644
          list(APPEND EXTRA_LIBS m)
        endif()
      endif()
-@@ -1468,6 +1474,48 @@ elseif(EMSCRIPTEN)
+@@ -1468,6 +1474,54 @@ elseif(EMSCRIPTEN)
    CheckPTHREAD()
    CheckLibUnwind()
  
@@ -103,8 +113,14 @@ index e45b53e20..690f9a9ff 100644
 +
 +  file(GLOB PS4_CORE_SOURCES ${SDL2_SOURCE_DIR}/src/core/ps4/*.c)
 +  list(APPEND SOURCE_FILES ${PS4_CORE_SOURCES})
-+  # The system libraries SDL links; the others are loaded when used.
-+  list(APPEND EXTRA_LIBS ScePad SceUserService SceSystemService SceSysmodule)
++  file(GLOB PS4_MAIN_SOURCES ${SDL2_SOURCE_DIR}/src/main/ps4/*.c)
++  list(APPEND SDLMAIN_SOURCES ${PS4_MAIN_SOURCES})
++  # The system libraries SDL links (libSceAppContent is for SDL2main); the
++  # others are loaded when used.
++  list(APPEND EXTRA_LIBS ScePad SceUserService SceSystemService SceSysmodule SceAppContent)
++  if(NOT SDL2_DISABLE_SDL2MAIN)
++    list(INSERT SDL_LIBS 0 "-lSDL2main")
++  endif()
 +
 +  if(SDL_FILESYSTEM)
 +    set(SDL_FILESYSTEM_PS4 1)
@@ -137,6 +153,16 @@ index e45b53e20..690f9a9ff 100644
  elseif(UNIX AND NOT APPLE AND NOT RISCOS AND NOT HAIKU)
    if(SDL_AUDIO)
      if(SYSV5 OR SOLARIS OR HPUX)
+@@ -3392,6 +3446,9 @@ if(NOT WINDOWS_STORE AND NOT SDL2_DISABLE_SDL2MAIN)
+   # Build SDLmain
+   add_library(SDL2main STATIC ${SDLMAIN_SOURCES})
+   add_dependencies(SDL2main sdl_headers_copy)
++  if(PS4)
++    target_link_libraries(SDL2main PUBLIC SceAppContent SceSystemService SceSysmodule)
++  endif()
+   # alias target for in-tree builds
+   add_library(SDL2::SDL2main ALIAS SDL2main)
+   target_include_directories(SDL2main BEFORE
 diff --git a/cmake/sdlchecks.cmake b/cmake/sdlchecks.cmake
 index ea4c0ff43..585be7f3c 100644
 --- a/cmake/sdlchecks.cmake
@@ -164,6 +190,26 @@ index 64b8413c8..a8e3c3592 100644
  #cmakedefine SDL_FILESYSTEM_N3DS @SDL_FILESYSTEM_N3DS@
  
  /* Enable misc subsystem */
+diff --git a/include/SDL_main.h b/include/SDL_main.h
+index a1ef3e746..2d2271f2c 100644
+--- a/include/SDL_main.h
++++ b/include/SDL_main.h
+@@ -101,6 +101,15 @@
+  */
+ #define SDL_MAIN_AVAILABLE
+ 
++#elif defined(__PS4__)
++/* On PS4, SDL provides a main function that sets up the XDG base
++   directories and exits back to the home screen when the program is
++   finished.
++
++   If you provide this yourself, you may define SDL_MAIN_HANDLED
++*/
++#define SDL_MAIN_AVAILABLE
++
+ #elif defined(__PS2__)
+ #define SDL_MAIN_AVAILABLE
+ 
 diff --git a/include/SDL_platform.h b/include/SDL_platform.h
 index 64ece4fe7..8d04ca01e 100644
 --- a/include/SDL_platform.h
@@ -442,7 +488,7 @@ index b5c9cbbe3..ab38b4146 100644
  #endif
 diff --git a/src/filesystem/ps4/SDL_sysfilesystem.c b/src/filesystem/ps4/SDL_sysfilesystem.c
 new file mode 100644
-index 000000000..4d0207c4c
+index 000000000..0417f5393
 --- /dev/null
 +++ b/src/filesystem/ps4/SDL_sysfilesystem.c
 @@ -0,0 +1,178 @@
@@ -475,7 +521,7 @@ index 000000000..4d0207c4c
 +
 +/* The base path is the folder of the program: the one its path was given
 +   in, or a package's /app0/. The preference path is in $XDG_DATA_HOME,
-+   which the SDK's crt sets before main() (/data is not always mounted). */
++   which SDL2main sets up before main() (/data is not always mounted). */
 +
 +#include <errno.h>
 +#include <limits.h>
@@ -705,6 +751,180 @@ index 000000000..d47f96d86
 +
 +    SDL_strlcpy(buf, ps4_locales[language], buflen);
 +}
++
++/* vi: set ts=4 sw=4 expandtab: */
+diff --git a/src/main/ps4/SDL_ps4_main.c b/src/main/ps4/SDL_ps4_main.c
+new file mode 100644
+index 000000000..2732760f8
+--- /dev/null
++++ b/src/main/ps4/SDL_ps4_main.c
+@@ -0,0 +1,168 @@
++/*
++  Simple DirectMedia Layer
++  Copyright (C) 1997-2025 Sam Lantinga <slouken@libsdl.org>
++
++  This software is provided 'as-is', without any express or implied
++  warranty.  In no event will the authors be held liable for any damages
++  arising from the use of this software.
++
++  Permission is granted to anyone to use this software for any purpose,
++  including commercial applications, and to alter it and redistribute it
++  freely, subject to the following restrictions:
++
++  1. The origin of this software must not be misrepresented; you must not
++     claim that you wrote the original software. If you use this software
++     in a product, an acknowledgment in the product documentation would be
++     appreciated but is not required.
++  2. Altered source versions must be plainly marked as such, and must not be
++     misrepresented as being the original software.
++  3. This notice may not be removed or altered from any source distribution.
++*/
++#include "SDL_config.h"
++
++#ifdef __PS4__
++
++#include "SDL_main.h"
++
++#include <stdio.h>
++#include <stdlib.h>
++#include <string.h>
++#include <sys/stat.h>
++
++#ifdef main
++#undef main
++#endif
++
++/* If the application's main() is redefined as SDL_main, and SDL2main is
++   linked, this main() sets up the XDG base directories before the program
++   starts (SDL_GetPrefPath() is in XDG_DATA_HOME, and Mesa's shader cache in
++   XDG_CACHE_HOME), and the program goes back to the home screen when it
++   exits.
++
++   If you provide your own main(), you may define SDL_MAIN_HANDLED; then you
++   set the XDG base directories yourself, or SDL_GetPrefPath() fails. */
++
++/* libkernel */
++extern int sceKernelDebugOutText(int channel, const char *text);
++extern int sceKernelIsInSandbox(void);
++extern const char *sceKernelGetFsSandboxRandomWord(void);
++
++/* libSceSysmodule */
++extern int sceSysmoduleLoadModule(unsigned short id);
++#define PS4_SYSMODULE_APP_CONTENT 0x00b4
++
++/* libSceSystemService */
++extern int sceSystemServiceLoadExec(const char *path, char *const argv[]);
++
++/* libSceAppContent */
++typedef struct
++{
++    unsigned char reserved[32];
++} PS4_AppContentInitParam;
++
++typedef struct
++{
++    unsigned char reserved1[4];
++    unsigned int attr;
++    unsigned char reserved2[32];
++} PS4_AppContentBootParam;
++
++typedef struct
++{
++    unsigned char data[16];
++} PS4_AppContentMountPoint;
++
++extern int sceAppContentInitialize(const PS4_AppContentInitParam *init, PS4_AppContentBootParam *boot);
++extern int sceAppContentTemporaryDataMount2(unsigned int option, PS4_AppContentMountPoint *mount_point);
++
++#define PS4_TEMP_DATA_FOLDER "/temp0"
++
++static PS4_AppContentMountPoint PS4_temp_data;
++
++/* Sets the XDG base directories that are not set already, to folders in
++   dir, and creates the folders. */
++static void PS4_SetXdgDirs(const char *dir)
++{
++    static const char *const vars[][2] = {
++        { "XDG_CACHE_HOME", ".cache" },
++        { "XDG_CONFIG_HOME", ".config" },
++        { "XDG_DATA_HOME", ".data" },
++        { "XDG_STATE_HOME", ".state" },
++    };
++    char path[256];
++    size_t i;
++
++    for (i = 0; i < sizeof(vars) / sizeof(vars[0]); i++) {
++        if (getenv(vars[i][0])) {
++            continue;
++        }
++        snprintf(path, sizeof(path), "%s/%s", dir, vars[i][1]);
++        mkdir(path, 0755);
++        setenv(vars[i][0], path, 0);
++    }
++}
++
++/* Mounts the title's temporary data, which only a game application (SFO
++   category "gd") has. Returns 0 on success. */
++static int PS4_MountTempData(void)
++{
++    PS4_AppContentInitParam init;
++    PS4_AppContentBootParam boot;
++    char msg[96];
++    int err;
++
++    memset(&init, 0, sizeof(init));
++    memset(&boot, 0, sizeof(boot));
++
++    sceSysmoduleLoadModule(PS4_SYSMODULE_APP_CONTENT);
++    sceAppContentInitialize(&init, &boot);
++
++    err = sceAppContentTemporaryDataMount2(0, &PS4_temp_data);
++    if (err) {
++        snprintf(msg, sizeof(msg), "<118>[SDL] sceAppContentTemporaryDataMount2: 0x%08x\n", (unsigned)err);
++        sceKernelDebugOutText(0, msg);
++    }
++    return err;
++}
++
++/* The XDG base directories are in the title's temporary data when it can be
++   mounted, otherwise in common_temp, which all homebrew shares. /data is
++   not always mounted. */
++static void PS4_InitXdgDirs(void)
++{
++    char dir[128];
++
++    if (!sceKernelIsInSandbox()) {
++        PS4_SetXdgDirs("/user/temp/common_temp");
++    } else if (PS4_MountTempData() == 0) {
++        PS4_SetXdgDirs(PS4_TEMP_DATA_FOLDER);
++    } else {
++        snprintf(dir, sizeof(dir), "/%s/common_temp", sceKernelGetFsSandboxRandomWord());
++        PS4_SetXdgDirs(dir);
++    }
++}
++
++/* Goes back to the home screen, however the program exits. It is registered
++   before the program starts, so it runs after the atexit() handlers of the
++   program and of the libraries it loads (e.g. Mesa). Handlers registered
++   before main() (the crt's, and the destructors of C++ globals) do not run
++   if the system ends the process here. */
++static void PS4_ExitToHomeScreen(void)
++{
++    fflush(NULL);
++    sceSystemServiceLoadExec("exit", NULL);
++}
++
++int main(int argc, char *argv[])
++{
++    atexit(PS4_ExitToHomeScreen);
++    PS4_InitXdgDirs();
++
++    SDL_SetMainReady();
++
++    return SDL_main(argc, argv);
++}
++
++#endif /* __PS4__ */
 +
 +/* vi: set ts=4 sw=4 expandtab: */
 diff --git a/src/misc/ps4/SDL_sysurl.c b/src/misc/ps4/SDL_sysurl.c
