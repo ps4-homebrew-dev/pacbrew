@@ -1,0 +1,195 @@
+From 5c1728edcfe1451084db17e3b7dbb31ad15b2269 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 4 Nov 2026 21:53:44 +0000
+Subject: [PATCH 13/13] radv/ps4, wsi/videoout: support the PS4 Pro's NEO mode
+
+In NEO mode, the PS4 Pro's GPU has four shader engines, 36 CUs and 16
+RBs, and VideoOut scans tiled framebuffers out with the NEO mode's
+tiling: a second set of tile modes, which a surface selects with a bit
+in its descriptor. RADV lays images out with the base PS4's tile modes,
+so the screen came out scrambled.
+
+Keep laying out every image like on the base PS4, which NEO mode allows
+for surfaces without CMASK, FMASK compression, DCC and HTILE: tell RADV
+not to use HTILE in NEO mode (it uses none of the others on the PS4).
+Make the swapchain images linear in NEO mode, and register them with
+VideoOut as such. Describe the GPU's units as they are in NEO mode, as
+RADV sizes scratch and occlusion queries by them.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EVpxQm2qgi1H2nU3iig9Gg
+---
+ include/ps4_sce.h                             |  1 +
+ src/amd/vulkan/radv_physical_device.c         |  4 +++
+ src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c   | 30 +++++++++++++++----
+ .../winsys/ps4/radv_ps4_winsys_public.h       |  2 ++
+ src/vulkan/wsi/wsi_common_videoout.c          | 16 +++++++++-
+ 5 files changed, 47 insertions(+), 6 deletions(-)
+
+diff --git a/include/ps4_sce.h b/include/ps4_sce.h
+index 034f96a..44ae1f3 100644
+--- a/include/ps4_sce.h
++++ b/include/ps4_sce.h
+@@ -74,6 +74,7 @@ uint64_t sceGnmGetTheTessellationFactorRingBufferBaseAddress(void);
+ #define PS4_VIDEO_OUT_BUS_MAIN 0
+ #define PS4_VIDEO_OUT_PIXEL_FORMAT_A8R8G8B8_SRGB 0x80000000u
+ #define PS4_VIDEO_OUT_TILING_MODE_TILE 0u
++#define PS4_VIDEO_OUT_TILING_MODE_LINEAR 1u
+ #define PS4_VIDEO_OUT_ASPECT_RATIO_16_9 0u
+ #define PS4_VIDEO_OUT_FLIP_VSYNC 1u
+ 
+diff --git a/src/amd/vulkan/radv_physical_device.c b/src/amd/vulkan/radv_physical_device.c
+index 0fe8374..4b21b68 100644
+--- a/src/amd/vulkan/radv_physical_device.c
++++ b/src/amd/vulkan/radv_physical_device.c
+@@ -2716,6 +2716,10 @@ radv_physical_device_try_create(struct radv_instance *instance, drmDevicePtr drm
+    pdev->force_64_byte_sampled_image = !pdev->use_fmask && instance->drirc.debug.force_64_byte_sampled_image;
+ 
+    pdev->use_hiz = !(instance->debug_flags & RADV_DEBUG_NO_HIZ);
++#ifdef RADV_PS4
++   if (winsys_info.no_htile)
++      pdev->use_hiz = false;
++#endif
+ 
+    if (pdev->info.gfx_level == GFX12) {
+       const char *gfx12_hiz_wa_str = instance->drirc.performance.gfx12_hiz_wa;
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+index 50aa85e..58a0a1e 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys.c
+@@ -189,7 +189,12 @@ radv_ps4_queue_release_retired(struct radv_ps4_queue *queue, bool wait)
+ #define RADV_PS4_MC_ARB_RAMCFG 0x00000002
+ 
+ /* The tile modes of the console's addressing library, as freegnm (src/gpuaddr/tilemodes.c) has
+- * them. This is the base PS4's configuration; the PS4 Pro mode tiles differently.
++ * them. This is the base PS4's configuration.
++ *
++ * The PS4 Pro's GPU keeps these in NEO mode too, and has a second set that a surface selects with
++ * a bit in its descriptor (CB_COLOR*_INFO bit 31, image descriptor dword 6 bit 24, as freegnm
++ * reverse-engineered them). RADV doesn't set those bits, so its images are laid out the same in
++ * both modes, which NEO mode allows as long as they use no CMASK, FMASK compression, DCC or HTILE.
+  */
+ static const uint32_t radv_ps4_gb_tile_mode[32] = {
+    0x00800310, /*  0: depth 2D thin, 64 B tile split */
+@@ -247,6 +252,9 @@ static const uint32_t radv_ps4_gb_macrotile_mode[16] = {
+ 
+ /* Liverpool is a GFX7 GPU, described to RADV as a Bonaire with Liverpool's units: two shader
+  * engines with one shader array each, 18 CUs, 8 RBs, 8 memory channels and 8 tiling pipes.
++ *
++ * In NEO mode, the PS4 Pro's GPU has twice the shader engines, CUs and RBs, and runs faster.
++ * RADV sizes scratch and the occlusion query slots by these, so they must be what is there.
+  */
+ static void
+ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+@@ -307,6 +315,18 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+    };
+    memcpy(gpu_info.gb_tile_mode, radv_ps4_gb_tile_mode, sizeof(radv_ps4_gb_tile_mode));
+    memcpy(gpu_info.gb_macro_tile_mode, radv_ps4_gb_macrotile_mode, sizeof(radv_ps4_gb_macrotile_mode));
++   const bool neo = radv_ps4_platform_is_neo();
++
++   if (neo) {
++      dev.num_shader_engines = 4;
++      dev.cu_active_number = 36;
++      dev.cu_bitmap[2][0] = dev.cu_bitmap[3][0] = 0x1ff;
++      dev.cu_ao_bitmap[2][0] = dev.cu_ao_bitmap[3][0] = 0x1ff;
++      dev.enabled_rb_pipes_mask = 0xffff;
++      dev.num_rb_pipes = 16;
++      dev.max_engine_clock = UINT64_C(911000);
++      dev.max_memory_clock = UINT64_C(1700000);
++   }
+ 
+    memset(info, 0, sizeof(*info));
+    /* The oldest kernel RADV supports, so that no newer kernel features are assumed. */
+@@ -325,7 +345,8 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+    ac_fill_compiler_info(info, &dev, compiler_compat_mode);
+    assert(info->family == CHIP_BONAIRE && info->gfx_level == GFX7);
+ 
+-   snprintf(info->marketing_name, sizeof(info->marketing_name), "PlayStation 4 GPU (Liverpool)");
++   snprintf(info->marketing_name, sizeof(info->marketing_name),
++            neo ? "PlayStation 4 Pro GPU (NEO mode)" : "PlayStation 4 GPU (Liverpool)");
+    info->l2_cache_size = info->num_tcc_blocks * 64 * 1024;
+ 
+    /* What the system does differently from the amdgpu kernel. */
+@@ -370,9 +391,6 @@ radv_ps4_describe_gpu(struct radeon_info *info, bool compiler_compat_mode)
+    info->memory_bandwidth_gbps = DIV_ROUND_UP(info->memory_freq_mhz_effective * info->memory_bus_width / 8, 1000);
+    info->instr_prefetch_distance = 0;
+    ac_get_raster_config(info, &info->pa_sc_raster_config, &info->pa_sc_raster_config_1, &info->se_tile_repeat);
+-
+-   if (radv_ps4_platform_is_neo())
+-      fprintf(stderr, "radv/ps4: PS4 Pro mode isn't supported, images may be laid out wrong\n");
+ }
+ 
+ void
+@@ -391,6 +409,8 @@ radv_ps4_winsys_query_info(uint64_t debug_flags, struct radeon_winsys_info *info
+       return VK_ERROR_INITIALIZATION_FAILED;
+ 
+    radv_ps4_describe_gpu(&info->base, !(debug_flags & RADV_DEBUG_NO_CACHE_COMPAT));
++   /* NEO mode refuses HTILE on depth buffers laid out like the base PS4's. */
++   info->no_htile = radv_ps4_platform_is_neo();
+    info->syncobj_sync_type = radv_ps4_sync_type;
+    /* There is one queue: allow only the priorities any application may use. */
+    info->global_priority_mask = BITFIELD_BIT(RADEON_CTX_PRIORITY_LOW) | BITFIELD_BIT(RADEON_CTX_PRIORITY_MEDIUM);
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys_public.h b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys_public.h
+index c921692..faa1015 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_winsys_public.h
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_winsys_public.h
+@@ -16,6 +16,8 @@ struct radeon_winsys_info {
+    struct radeon_info base;
+    struct vk_sync_type syncobj_sync_type;
+    uint32_t global_priority_mask;
++   /* Depth buffers must not have HTILE (the PS4 Pro in NEO mode). */
++   bool no_htile;
+ };
+ 
+ VkResult radv_ps4_winsys_query_info(uint64_t debug_flags, struct radeon_winsys_info *info);
+diff --git a/src/vulkan/wsi/wsi_common_videoout.c b/src/vulkan/wsi/wsi_common_videoout.c
+index 304b2d8..b6ba514 100644
+--- a/src/vulkan/wsi/wsi_common_videoout.c
++++ b/src/vulkan/wsi/wsi_common_videoout.c
+@@ -14,6 +14,10 @@
+  * once the first swapchain tells their pitch. The images use the 2D thin
+  * display tiling RADV gives GFX7 scanout images, which VideoOut scans out.
+  *
++ * On a PS4 Pro in NEO mode, VideoOut scans tiled framebuffers out with the
++ * NEO mode's tiling, which RADV doesn't lay images out with. The images are
++ * linear there instead.
++ *
+  * A present waits for its fence on a thread and flips at the next vblank; FIFO
+  * is the only present mode.
+  */
+@@ -158,6 +162,13 @@ videoout_alloc_buffers_locked(void)
+    return VK_SUCCESS;
+ }
+ 
++/* Whether the images are linear rather than tiled; see the top of the file. */
++static bool
++videoout_linear(void)
++{
++   return sceKernelIsNeoMode() > 0;
++}
++
+ /* Registers the framebuffers, once per process, with the images' pitch. */
+ static VkResult
+ videoout_register_pitch_locked(uint32_t pitch_pixels)
+@@ -168,7 +179,8 @@ videoout_register_pitch_locked(uint32_t pitch_pixels)
+ 
+    int result = sceVideoOutSetFlipRate(out->handle, 0);
+    struct ps4_video_out_buffer_attribute attribute;
+-   sceVideoOutSetBufferAttribute(&attribute, PS4_VIDEO_OUT_PIXEL_FORMAT_A8R8G8B8_SRGB, PS4_VIDEO_OUT_TILING_MODE_TILE,
++   const uint32_t tiling = videoout_linear() ? PS4_VIDEO_OUT_TILING_MODE_LINEAR : PS4_VIDEO_OUT_TILING_MODE_TILE;
++   sceVideoOutSetBufferAttribute(&attribute, PS4_VIDEO_OUT_PIXEL_FORMAT_A8R8G8B8_SRGB, tiling,
+                                  PS4_VIDEO_OUT_ASPECT_RATIO_16_9, VIDEOOUT_WIDTH, VIDEOOUT_HEIGHT, pitch_pixels);
+    void *addresses[VIDEOOUT_BUFFERS];
+    for (uint32_t i = 0; i < VIDEOOUT_BUFFERS; i++)
+@@ -581,6 +593,8 @@ wsi_videoout_configure_image(const struct wsi_swapchain *chain, const VkSwapchai
+       return result;
+ 
+    info->wsi.scanout = true;
++   if (videoout_linear())
++      info->create.tiling = VK_IMAGE_TILING_LINEAR;
+    info->create_mem = videoout_create_image_mem;
+    return VK_SUCCESS;
+ }
+-- 
+2.43.0
+
