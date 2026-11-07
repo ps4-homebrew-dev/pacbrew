@@ -21,7 +21,8 @@ build() {
     source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
     cd zlib-$pkgver
 
-    ./configure --prefix="${PREFIX}"
+    ./configure --prefix="${PREFIX}" --host=x86_64-pc-freebsd \
+		--enable-static --disable-shared
     ${MAKE}
 }
 
