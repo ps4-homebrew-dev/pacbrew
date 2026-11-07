@@ -3,7 +3,7 @@
 SCRIPT_PATH="$(realpath "${BASH_SOURCE[0]}")"
 SCRIPT_DIR="$(dirname "${SCRIPT_PATH}")"
 
-PKGS=(sdk openlibm zlib libcxx bzip2 dht enet expat faad2
+PKGS=(sdk openlibm zlib libcxx openmp bzip2 dht enet expat faad2
       fast_float fmt freetype fontconfig giflib glm harfbuzz jansson lame
       lexbor libb64 libconfig libdeflate libfribidi libass libiconv libmad
       libmicrodns libminizip libmodplug libmpeg2 libnatpmp
