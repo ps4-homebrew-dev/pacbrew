@@ -1,0 +1,149 @@
+From 8864ad057ee7f23b5efc8c773023d7bbccc4d5f5 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Wed, 4 Nov 2026 23:12:58 +0000
+Subject: [PATCH 14/15] radv/ps4: load the GNM driver for the GPU mode
+
+A process that a PS4 Pro runs in NEO mode must use
+libSceGnmDriverForNeoMode. libSceGnmDriver, which libvulkan linked,
+sets the GPU up like a base PS4's ("**** Base Mode ****" in the
+kernel log), and the GPU hangs on the first real draws. Loading
+libSceGnmDriverForNeoMode as well doesn't help: libSceGnmDriver
+still gets loaded, fails to initialize, and is the one RADV calls.
+
+Don't link libSceGnmDriver. Load libSceGnmDriverForNeoMode in NEO
+mode and libSceGnmDriver otherwise, when the platform is set up, and
+call the four functions RADV uses through pointers.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EVpxQm2qgi1H2nU3iig9Gg
+---
+ include/ps4_sce.h                             | 10 ++---
+ meson.build                                   |  5 ++-
+ src/amd/vulkan/winsys/ps4/radv_ps4_platform.c | 45 +++++++++++++++++--
+ 3 files changed, 48 insertions(+), 12 deletions(-)
+
+diff --git a/include/ps4_sce.h b/include/ps4_sce.h
+index 44ae1f3..07ee030 100644
+--- a/include/ps4_sce.h
++++ b/include/ps4_sce.h
+@@ -61,12 +61,10 @@ int32_t sceKernelIsNeoMode(void);
+ 
+ /* ------------------------------------------------------- libSceGnmDriver */
+ 
+-int32_t sceGnmSubmitCommandBuffers(uint32_t count, void *dcb_addresses[], uint32_t *dcb_bytes,
+-                                   void *ccb_addresses[], uint32_t *ccb_bytes);
+-int32_t sceGnmSubmitDone(void);
+-/* 4 to 8 MiB in 1 MiB steps. */
+-int32_t sceGnmSetGsRingSizes(uint32_t esgs_ring_bytes, uint32_t gsvs_ring_bytes);
+-uint64_t sceGnmGetTheTessellationFactorRingBufferBaseAddress(void);
++/* RADV loads libSceGnmDriver or libSceGnmDriverForNeoMode at run time, for the GPU mode, and
++ * calls sceGnmSubmitCommandBuffers, sceGnmSubmitDone, sceGnmSetGsRingSizes (4 to 8 MiB in
++ * 1 MiB steps) and sceGnmGetTheTessellationFactorRingBufferBaseAddress through pointers.
++ */
+ 
+ /* ---------------------------------------------------------- libSceVideoOut */
+ 
+diff --git a/meson.build b/meson.build
+index 9b4f72f..198f2e1 100644
+--- a/meson.build
++++ b/meson.build
+@@ -505,8 +505,9 @@ if amd_no_drm
+   pre_args += '-DAMD_NO_DRM'
+ endif
+ # The system modules RADV calls: libvulkan links them, and the .pc files hand
+-# them to programs so that their crt initializes them.
+-ps4_sysmodule_libs = with_radv_ps4 ? ['-lSceGnmDriver', '-lSceVideoOut'] : []
++# them to programs so that their crt initializes them. The GNM driver is not
++# one of them: RADV loads the one for the GPU mode the process runs in.
++ps4_sysmodule_libs = with_radv_ps4 ? ['-lSceVideoOut'] : []
+ 
+ if with_platform_videoout and not (with_gallium_zink and with_radv_ps4)
+   error('The videoout platform needs -Dgallium-drivers=zink -Dvulkan-drivers=amd -Dradv-winsys=ps4')
+diff --git a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+index ba961dd..09048e8 100644
+--- a/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
++++ b/src/amd/vulkan/winsys/ps4/radv_ps4_platform.c
+@@ -6,6 +6,7 @@
+ 
+ #include "radv_ps4_platform.h"
+ 
++#include <dlfcn.h>
+ #include <inttypes.h>
+ #include <stdio.h>
+ #include <stdlib.h>
+@@ -33,6 +34,40 @@ static struct {
+ static bool radv_ps4_neo;
+ static uint64_t radv_ps4_tess_factor_ring;
+ 
++/* The GNM driver's functions RADV calls. A process the PS4 Pro runs in NEO mode must use
++ * libSceGnmDriverForNeoMode: libSceGnmDriver sets the GPU up like a base PS4's, which hangs
++ * it. Linking libSceGnmDriver would load it, whatever the mode, so the driver is loaded here.
++ */
++static struct {
++   int32_t (*submit_command_buffers)(uint32_t count, void *dcb_addresses[], uint32_t *dcb_bytes,
++                                     void *ccb_addresses[], uint32_t *ccb_bytes);
++   int32_t (*submit_done)(void);
++   int32_t (*set_gs_ring_sizes)(uint32_t esgs_ring_bytes, uint32_t gsvs_ring_bytes);
++   uint64_t (*get_tess_factor_ring_base)(void);
++} radv_ps4_gnm;
++
++static bool
++radv_ps4_gnm_load(void)
++{
++   const char *name = radv_ps4_neo ? "libSceGnmDriverForNeoMode.sprx" : "libSceGnmDriver.sprx";
++   void *module = dlopen(name, RTLD_NOW);
++   if (!module) {
++      fprintf(stderr, "radv/ps4: %s isn't loaded: %s\n", name, dlerror());
++      return false;
++   }
++
++   radv_ps4_gnm.submit_command_buffers = dlsym(module, "sceGnmSubmitCommandBuffers");
++   radv_ps4_gnm.submit_done = dlsym(module, "sceGnmSubmitDone");
++   radv_ps4_gnm.set_gs_ring_sizes = dlsym(module, "sceGnmSetGsRingSizes");
++   radv_ps4_gnm.get_tess_factor_ring_base = dlsym(module, "sceGnmGetTheTessellationFactorRingBufferBaseAddress");
++   if (!radv_ps4_gnm.submit_command_buffers || !radv_ps4_gnm.submit_done || !radv_ps4_gnm.set_gs_ring_sizes ||
++       !radv_ps4_gnm.get_tess_factor_ring_base) {
++      fprintf(stderr, "radv/ps4: %s lacks a function RADV calls\n", name);
++      return false;
++   }
++   return true;
++}
++
+ static bool
+ radv_ps4_granule_used(uint32_t granule)
+ {
+@@ -154,7 +189,7 @@ radv_ps4_window_reserve(uint64_t bytes)
+ static void
+ radv_ps4_tess_factor_ring_map(void)
+ {
+-   const uint64_t at = sceGnmGetTheTessellationFactorRingBufferBaseAddress();
++   const uint64_t at = radv_ps4_gnm.get_tess_factor_ring_base();
+    const uint64_t bytes = RADV_PS4_TESS_FACTOR_RING_BYTES;
+    int64_t physical = 0;
+    void *address = (void *)(uintptr_t)at;
+@@ -204,8 +239,10 @@ radv_ps4_platform_once(void)
+    }
+ 
+    radv_ps4_neo = sceKernelIsNeoMode() > 0;
++   if (!radv_ps4_gnm_load())
++      return;
+ 
+-   const int err = sceGnmSetGsRingSizes(RADV_PS4_GS_RING_BYTES, RADV_PS4_GS_RING_BYTES);
++   const int err = radv_ps4_gnm.set_gs_ring_sizes(RADV_PS4_GS_RING_BYTES, RADV_PS4_GS_RING_BYTES);
+    if (err)
+       fprintf(stderr, "radv/ps4: sceGnmSetGsRingSizes failed: 0x%08x\n", (unsigned)err);
+ 
+@@ -371,8 +408,8 @@ radv_ps4_submit(uint32_t *words, uint32_t count)
+    uint32_t ccb_bytes = 0;
+ 
+    radv_ps4_cpu_flush();
+-   int err = sceGnmSubmitCommandBuffers(1, &dcb, &dcb_bytes, &ccb, &ccb_bytes);
++   int err = radv_ps4_gnm.submit_command_buffers(1, &dcb, &dcb_bytes, &ccb, &ccb_bytes);
+    if (!err)
+-      err = sceGnmSubmitDone();
++      err = radv_ps4_gnm.submit_done();
+    return err;
+ }
+-- 
+2.43.0
+
