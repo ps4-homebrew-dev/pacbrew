@@ -13,7 +13,7 @@ PKGS=(sdk openlibm zlib libcxx openmp bzip2 dht enet expat faad2
       openssl curl libssh libssh2 opus libsndfile sqlite tinyxml2 xz
       libxml2 yaml-cpp zstd libarchive libzip mesa glu glew vulkan-headers ffmpeg
       SDL2 SDL2_ttf SDL2_net SDL2_mixer SDL2_image SDL2_gfx SDL2_kitchensink
-      rmlui libplacebo mpv)
+      openal rmlui libplacebo mpv )
 
 sudo pacman --noconfirm --remove ps4-homebrew-dev
 
