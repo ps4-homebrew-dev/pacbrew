@@ -1,0 +1,99 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sun, 8 Nov 2026 20:06:59 +0000
+Subject: [PATCH] ps4: SDL2main: the XDG base directories in /download0, for a
+ non-game app
+
+Only a game application (SFO category "gd") gets its temporary data
+mounted at /temp0; anything else had its XDG base directories in
+common_temp, which all homebrew shares. A non-game application ("gdc",
+which a PS5 running it as a PS4 app treats as a media app, giving it the
+remote's media keys) gets its download data mounted at /download0 when
+its param.sfo gives DOWNLOAD_DATA_SIZE (in MiB): that is now used when
+/temp0 is not, before common_temp. Which folder it is goes to the kernel
+log.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EVpxQkzH9rv89iUgZNfgY9
+---
+ docs/README-ps4.md          |  8 ++++++--
+ src/main/ps4/SDL_ps4_main.c | 27 ++++++++++++++++++++++-----
+ 2 files changed, 28 insertions(+), 7 deletions(-)
+
+diff --git a/docs/README-ps4.md b/docs/README-ps4.md
+index 230eaa8..999943c 100644
+--- a/docs/README-ps4.md
++++ b/docs/README-ps4.md
+@@ -38,8 +38,12 @@ directories that are not set already, and creates them:
+ 
+ `<folder>` is `/temp0`, the title's temporary data, when libSceAppContent
+ can mount it, which it only does for a game application (SFO category
+-`gd`). Otherwise it is `common_temp`, which all homebrew shares. `/data`
+-is not used, as it is not always mounted.
++`gd`). Otherwise it is `/download0`, the title's download data, when it has
++any: a non-game application (category `gdc`, which a PS5 running it treats
++as a media app) gets it by giving its size, in MiB, as `DOWNLOAD_DATA_SIZE`
++in its param.sfo. Otherwise it is `common_temp`, which all homebrew shares.
++`/data` is not used, as it is not always mounted. Which folder it is goes
++to the kernel log (`[SDL] XDG base directories in ...`).
+ 
+ When the program exits, by returning from `main()` or calling `exit()`, it
+ goes back to the home screen (`sceSystemServiceLoadExec("exit", NULL)`),
+diff --git a/src/main/ps4/SDL_ps4_main.c b/src/main/ps4/SDL_ps4_main.c
+index 2732760..3da747d 100644
+--- a/src/main/ps4/SDL_ps4_main.c
++++ b/src/main/ps4/SDL_ps4_main.c
+@@ -76,6 +76,7 @@ extern int sceAppContentInitialize(const PS4_AppContentInitParam *init, PS4_AppC
+ extern int sceAppContentTemporaryDataMount2(unsigned int option, PS4_AppContentMountPoint *mount_point);
+ 
+ #define PS4_TEMP_DATA_FOLDER "/temp0"
++#define PS4_DOWNLOAD_DATA_FOLDER "/download0"
+ 
+ static PS4_AppContentMountPoint PS4_temp_data;
+ 
+@@ -125,21 +126,37 @@ static int PS4_MountTempData(void)
+     return err;
+ }
+ 
++/* Whether path is a folder. */
++static int PS4_IsFolder(const char *path)
++{
++    struct stat st;
++
++    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
++}
++
+ /* The XDG base directories are in the title's temporary data when it can be
+-   mounted, otherwise in common_temp, which all homebrew shares. /data is
+-   not always mounted. */
++   mounted (a game application), otherwise in its download data when it has
++   any (an application whose param.sfo has a DOWNLOAD_DATA_SIZE, which the
++   system mounts as /download0 for a non-game application too), otherwise in
++   common_temp, which all homebrew shares. /data is not always mounted. */
+ static void PS4_InitXdgDirs(void)
+ {
+     char dir[128];
++    char msg[192];
+ 
+     if (!sceKernelIsInSandbox()) {
+-        PS4_SetXdgDirs("/user/temp/common_temp");
++        snprintf(dir, sizeof(dir), "/user/temp/common_temp");
+     } else if (PS4_MountTempData() == 0) {
+-        PS4_SetXdgDirs(PS4_TEMP_DATA_FOLDER);
++        snprintf(dir, sizeof(dir), "%s", PS4_TEMP_DATA_FOLDER);
++    } else if (PS4_IsFolder(PS4_DOWNLOAD_DATA_FOLDER)) {
++        snprintf(dir, sizeof(dir), "%s", PS4_DOWNLOAD_DATA_FOLDER);
+     } else {
+         snprintf(dir, sizeof(dir), "/%s/common_temp", sceKernelGetFsSandboxRandomWord());
+-        PS4_SetXdgDirs(dir);
+     }
++    PS4_SetXdgDirs(dir);
++
++    snprintf(msg, sizeof(msg), "<118>[SDL] XDG base directories in %s\n", dir);
++    sceKernelDebugOutText(0, msg);
+ }
+ 
+ /* Goes back to the home screen, however the program exits. It is registered
+-- 
+2.43.0
+
