@@ -1,0 +1,138 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Tue, 10 Nov 2026 14:28:28 +0000
+Subject: [PATCH] ps4: log what the remote reports to /dev/klog
+
+To find out why a remote key gives nothing (OPTIONS on the TV's remote
+over HDMI-CEC, say), what the remote control port reports is logged to
+the kernel log with sceKernelDebugOutText(), each time it changes: the
+connected flag, the buttons, and the device unique data the CEC key code
+is read from, or the error from scePadReadState(). Opening the port is
+logged too, with its handle or its error.
+
+A line is logged only when the state changes, so a held key or an idle
+remote does not flood the log. A press that comes and goes between two
+reads is not seen, as before.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EVpxQmphxjyzGFQPpgqSkT
+---
+ src/core/ps4/SDL_ps4.h        |  4 +++
+ src/video/ps4/SDL_ps4remote.c | 55 ++++++++++++++++++++++++++++++++++-
+ 2 files changed, 58 insertions(+), 1 deletion(-)
+
+diff --git a/src/core/ps4/SDL_ps4.h b/src/core/ps4/SDL_ps4.h
+index 6ea2479..c2e2c4f 100644
+--- a/src/core/ps4/SDL_ps4.h
++++ b/src/core/ps4/SDL_ps4.h
+@@ -54,6 +54,10 @@ extern int PS4_GetForegroundUser(void);
+ /* scePadInit(), once, for the joysticks and the remote. */
+ extern int PS4_InitPad(void);
+ 
++/* libkernel: writes text to the kernel log, /dev/klog. A line starts with
++   a syslog priority, as "<118>", and ends with a newline. */
++extern int sceKernelDebugOutText(int channel, const char *text);
++
+ /* libSceUserService */
+ typedef struct PS4_LoginUserIdList
+ {
+diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
+index 620067d..efd6309 100644
+--- a/src/video/ps4/SDL_ps4remote.c
++++ b/src/video/ps4/SDL_ps4remote.c
+@@ -38,6 +38,53 @@
+ 
+ #include "SDL_ps4remote.h"
+ 
++/* What the remote reports is logged to /dev/klog whenever it changes: the
++   buttons, and the device unique data the CEC key code is read from. This
++   is to find out how a remote's keys come, for a key that gives nothing. */
++static SDL_bool remote_logged = SDL_FALSE;
++static int remote_last_err = 0;
++static PS4_PadData remote_last_pad;
++
++static void PS4_Remote_Log(SDL_PRINTF_FORMAT_STRING const char *fmt, ...) SDL_PRINTF_VARARG_FUNC(1);
++
++static void PS4_Remote_Log(SDL_PRINTF_FORMAT_STRING const char *fmt, ...)
++{
++    char msg[256];
++    va_list ap;
++    int n;
++
++    n = SDL_snprintf(msg, sizeof(msg), "<118>[SDL] remote: ");
++    va_start(ap, fmt);
++    SDL_vsnprintf(msg + n, sizeof(msg) - n - 1, fmt, ap);
++    va_end(ap);
++    SDL_strlcat(msg, "\n", sizeof(msg));
++    sceKernelDebugOutText(0, msg);
++}
++
++static void PS4_Remote_LogState(int err, const PS4_PadData *pad)
++{
++    const Uint8 *d = pad->deviceUniqueData;
++
++    if (remote_logged && err == remote_last_err &&
++        pad->connected == remote_last_pad.connected &&
++        pad->buttons == remote_last_pad.buttons &&
++        pad->deviceUniqueDataLen == remote_last_pad.deviceUniqueDataLen &&
++        SDL_memcmp(d, remote_last_pad.deviceUniqueData, sizeof(pad->deviceUniqueData)) == 0) {
++        return;
++    }
++    remote_logged = SDL_TRUE;
++    remote_last_err = err;
++    remote_last_pad = *pad;
++
++    if (err != 0) {
++        PS4_Remote_Log("scePadReadState: 0x%08x", (unsigned)err);
++        return;
++    }
++    PS4_Remote_Log("connected=%u buttons=0x%08x len=%u data=%02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x %02x",
++                   pad->connected, (unsigned)pad->buttons, pad->deviceUniqueDataLen,
++                   d[0], d[1], d[2], d[3], d[4], d[5], d[6], d[7], d[8], d[9], d[10], d[11]);
++}
++
+ static const struct
+ {
+     Uint32 button;
+@@ -124,6 +171,7 @@ int PS4_Remote_Init(void)
+         return 0;
+     }
+     SDL_zeroa(remote_keys);
++    remote_logged = SDL_FALSE;
+ 
+     if (PS4_InitPad() < 0) {
+         return -1;
+@@ -134,9 +182,11 @@ int PS4_Remote_Init(void)
+         handle = scePadGetHandle(PS4_USER_ID_SYSTEM, PS4_PAD_PORT_TYPE_REMOTE_CONTROL, 0);
+     }
+     if (handle < 0) {
++        PS4_Remote_Log("scePadOpen: 0x%08x, no remote", (unsigned)handle);
+         return SDL_SetError("scePadOpen: 0x%08x", (unsigned)handle);
+     }
+     remote_handle = handle;
++    PS4_Remote_Log("opened, handle %d", handle);
+ 
+     return 0;
+ }
+@@ -146,6 +196,7 @@ void PS4_Remote_PumpEvents(void)
+     Uint8 keys[SDL_NUM_SCANCODES];
+     PS4_PadData pad;
+     Uint8 code;
++    int err;
+     int i;
+ 
+     if (remote_handle < 0) {
+@@ -155,7 +206,9 @@ void PS4_Remote_PumpEvents(void)
+     /* On a read error or with no remote, everything is let go of. */
+     SDL_zeroa(keys);
+     SDL_zero(pad);
+-    if (scePadReadState(remote_handle, &pad) == 0 && pad.connected) {
++    err = scePadReadState(remote_handle, &pad);
++    PS4_Remote_LogState(err, &pad);
++    if (err == 0 && pad.connected) {
+         for (i = 0; i < (int)SDL_arraysize(remote_button_map); i++) {
+             if (pad.buttons & remote_button_map[i].button) {
+                 keys[remote_button_map[i].scancode] = 1;
+-- 
+2.43.0
+

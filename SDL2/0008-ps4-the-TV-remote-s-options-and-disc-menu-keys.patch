@@ -1,0 +1,64 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Tue, 10 Nov 2026 14:39:05 +0000
+Subject: [PATCH] ps4: the TV remote's options and disc menu keys
+
+On the TV's remote over HDMI-CEC, options is reported as the controller's
+TRIANGLE and disc menu as SQUARE, not as OPTIONS or a CEC key code, so
+neither key gave anything. Options is now Menu, as OPTIONS already is, and
+disc menu is F10, after guide's F9. OPTIONS stays Menu, for a remote that
+reports it.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EVpxQmphxjyzGFQPpgqSkT
+---
+ docs/README-ps4.md            |  1 +
+ src/video/ps4/SDL_ps4remote.c | 13 ++++++++-----
+ 2 files changed, 9 insertions(+), 5 deletions(-)
+
+diff --git a/docs/README-ps4.md b/docs/README-ps4.md
+index 999943c..d9a4696 100644
+--- a/docs/README-ps4.md
++++ b/docs/README-ps4.md
+@@ -103,6 +103,7 @@ Drivers
+   | camera, display            | F3, F4                       |
+   | red, green, yellow, blue   | F5, F6, F7, F8               |
+   | guide                      | F9                           |
++  | disc menu                  | F10                          |
+   | channel + / -              | PageUp, PageDown             |
+   | previous channel           | Backspace                    |
+ * Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
+diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
+index 620067d..088bbc1 100644
+--- a/src/video/ps4/SDL_ps4remote.c
++++ b/src/video/ps4/SDL_ps4remote.c
+@@ -25,11 +25,12 @@
+ /* A media remote, on libScePad's remote control port, as keys.
+ 
+    This is the TV's remote over HDMI-CEC (with "Enable HDMI Device Link"
+-   on), or a media remote. The arrows, X, O and OPTIONS are reported as
+-   the controller's buttons; every other key is reported as a CEC key code
+-   in the pad state, as on the PS5. The remote is not a joystick: it only
+-   sends key events. When the port cannot be opened, there is simply no
+-   remote. */
++   on), or a media remote. The arrows, OK, back, options and disc menu
++   are reported as the controller's buttons (options as TRIANGLE and disc
++   menu as SQUARE, on the TV's remote); every other key is reported as a
++   CEC key code in the pad state, as on the PS5. The remote is not a
++   joystick: it only sends key events. When the port cannot be opened,
++   there is simply no remote. */
+ 
+ #include "SDL_events.h"
+ #include "../../events/SDL_keyboard_c.h"
+@@ -50,6 +51,8 @@ static const struct
+     { PS4_PAD_BUTTON_CROSS, SDL_SCANCODE_RETURN },  /* "ok" */
+     { PS4_PAD_BUTTON_CIRCLE, SDL_SCANCODE_ESCAPE }, /* "back" */
+     { PS4_PAD_BUTTON_OPTIONS, SDL_SCANCODE_MENU },
++    { PS4_PAD_BUTTON_TRIANGLE, SDL_SCANCODE_MENU }, /* "options" */
++    { PS4_PAD_BUTTON_SQUARE, SDL_SCANCODE_F10 },    /* "disc menu" */
+ };
+ 
+ /* The CEC key code, indexed by its value; 0 is no key. */
+-- 
+2.43.0
+
