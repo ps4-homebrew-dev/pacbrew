@@ -7,7 +7,7 @@ url='https://ffmpeg.org'
 license=('LGPL' 'GPL')
 options=(!strip !libtool staticlibs)
 source=("https://github.com/FFmpeg/FFmpeg/archive/refs/tags/n$pkgver.tar.gz")
-sha256sums=('SKIP')
+sha256sums=('09f990289327d3ebfedf4fc15cae3f884a65dab7a5aac7bbb5b01ff83900efd9')
 groups=('ps4-homebrew-dev')
 depends=('ps4-homebrew-zlib' 'ps4-homebrew-openssl' 'ps4-homebrew-freetype'
 	 'ps4-homebrew-libfribidi' 'ps4-homebrew-harfbuzz' 'ps4-homebrew-libass'

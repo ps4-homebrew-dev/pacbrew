@@ -7,8 +7,7 @@ arch=('any')
 url="https://katajakasa.github.io/SDL_kitchensink/"
 license=('MIT')
 source=("https://github.com/katajakasa/SDL_kitchensink/archive/refs/tags/$pkgver$_tagsuffix.tar.gz")
-sha256sums=('SKIP')
-
+sha256sums=('6282a949fa69c56fa046f10ab0cca717cf7ee7d7633148bb0c08d459e232062e')
 options=(!strip !libtool staticlibs)
 groups=('ps4-homebrew-dev')
 makedepends=('ps4-homebrew-sdk')
