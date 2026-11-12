@@ -17,7 +17,7 @@ Claude-Session: https://claude.ai/code/session_01EVpxQmphxjyzGFQPpgqSkT
  2 files changed, 9 insertions(+), 5 deletions(-)
 
 diff --git a/docs/README-ps4.md b/docs/README-ps4.md
-index 999943c..d9a4696 100644
+index 492d074..163468a 100644
 --- a/docs/README-ps4.md
 +++ b/docs/README-ps4.md
 @@ -103,6 +103,7 @@ Drivers
@@ -29,7 +29,7 @@ index 999943c..d9a4696 100644
    | previous channel           | Backspace                    |
  * Filesystem: `SDL_GetBasePath()` is the program's folder (from `argv[0]`,
 diff --git a/src/video/ps4/SDL_ps4remote.c b/src/video/ps4/SDL_ps4remote.c
-index 620067d..088bbc1 100644
+index efd6309..760ec4d 100644
 --- a/src/video/ps4/SDL_ps4remote.c
 +++ b/src/video/ps4/SDL_ps4remote.c
 @@ -25,11 +25,12 @@
@@ -50,7 +50,7 @@ index 620067d..088bbc1 100644
  
  #include "SDL_events.h"
  #include "../../events/SDL_keyboard_c.h"
-@@ -50,6 +51,8 @@ static const struct
+@@ -97,6 +98,8 @@ static const struct
      { PS4_PAD_BUTTON_CROSS, SDL_SCANCODE_RETURN },  /* "ok" */
      { PS4_PAD_BUTTON_CIRCLE, SDL_SCANCODE_ESCAPE }, /* "back" */
      { PS4_PAD_BUTTON_OPTIONS, SDL_SCANCODE_MENU },
@@ -59,6 +59,3 @@ index 620067d..088bbc1 100644
  };
  
  /* The CEC key code, indexed by its value; 0 is no key. */
--- 
-2.43.0
-

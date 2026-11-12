@@ -9,38 +9,42 @@ mounted at /temp0; anything else had its XDG base directories in
 common_temp, which all homebrew shares. A non-game application ("gdc",
 which a PS5 running it as a PS4 app treats as a media app, giving it the
 remote's media keys) gets its download data mounted at /download0 when
-its param.sfo gives DOWNLOAD_DATA_SIZE (in MiB): that is now used when
-/temp0 is not, before common_temp. Which folder it is goes to the kernel
-log.
+its param.sfo gives DOWNLOAD_DATA_SIZE (in MiB). /download0 is now used
+first, when it is there, then /temp0, then common_temp. Which folder it
+is goes to the kernel log.
 
 Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
-Claude-Session: https://claude.ai/code/session_01EVpxQkzH9rv89iUgZNfgY9
+Claude-Session: https://claude.ai/code/session_01EVpxQio1grQA9gVuJ97jxF
 ---
- docs/README-ps4.md          |  8 ++++++--
- src/main/ps4/SDL_ps4_main.c | 27 ++++++++++++++++++++++-----
- 2 files changed, 28 insertions(+), 7 deletions(-)
+ docs/README-ps4.md          | 12 ++++++++----
+ src/main/ps4/SDL_ps4_main.c | 30 ++++++++++++++++++++++++------
+ 2 files changed, 32 insertions(+), 10 deletions(-)
 
 diff --git a/docs/README-ps4.md b/docs/README-ps4.md
-index 230eaa8..999943c 100644
+index 230eaa8..492d074 100644
 --- a/docs/README-ps4.md
 +++ b/docs/README-ps4.md
-@@ -38,8 +38,12 @@ directories that are not set already, and creates them:
+@@ -36,10 +36,14 @@ directories that are not set already, and creates them:
+ | `XDG_DATA_HOME`   | `<folder>/.data`    |
+ | `XDG_STATE_HOME`  | `<folder>/.state`   |
  
- `<folder>` is `/temp0`, the title's temporary data, when libSceAppContent
- can mount it, which it only does for a game application (SFO category
+-`<folder>` is `/temp0`, the title's temporary data, when libSceAppContent
+-can mount it, which it only does for a game application (SFO category
 -`gd`). Otherwise it is `common_temp`, which all homebrew shares. `/data`
 -is not used, as it is not always mounted.
-+`gd`). Otherwise it is `/download0`, the title's download data, when it has
-+any: a non-game application (category `gdc`, which a PS5 running it treats
-+as a media app) gets it by giving its size, in MiB, as `DOWNLOAD_DATA_SIZE`
-+in its param.sfo. Otherwise it is `common_temp`, which all homebrew shares.
-+`/data` is not used, as it is not always mounted. Which folder it is goes
-+to the kernel log (`[SDL] XDG base directories in ...`).
++`<folder>` is `/download0`, the title's download data, when it has any: an
++application, game (SFO category `gd`) or not (category `gdc`, which a PS5
++running it treats as a media app), gets it by giving its size, in MiB, as
++`DOWNLOAD_DATA_SIZE` in its param.sfo. Otherwise it is `/temp0`, the
++title's temporary data, when libSceAppContent can mount it, which it only
++does for a game application. Otherwise it is `common_temp`, which all
++homebrew shares. `/data` is not used, as it is not always mounted. Which
++folder it is goes to the kernel log (`[SDL] XDG base directories in ...`).
  
  When the program exits, by returning from `main()` or calling `exit()`, it
  goes back to the home screen (`sceSystemServiceLoadExec("exit", NULL)`),
 diff --git a/src/main/ps4/SDL_ps4_main.c b/src/main/ps4/SDL_ps4_main.c
-index 2732760..3da747d 100644
+index 2732760..ddd20dd 100644
 --- a/src/main/ps4/SDL_ps4_main.c
 +++ b/src/main/ps4/SDL_ps4_main.c
 @@ -76,6 +76,7 @@ extern int sceAppContentInitialize(const PS4_AppContentInitParam *init, PS4_AppC
@@ -51,10 +55,13 @@ index 2732760..3da747d 100644
  
  static PS4_AppContentMountPoint PS4_temp_data;
  
-@@ -125,21 +126,37 @@ static int PS4_MountTempData(void)
+@@ -125,21 +126,38 @@ static int PS4_MountTempData(void)
      return err;
  }
  
+-/* The XDG base directories are in the title's temporary data when it can be
+-   mounted, otherwise in common_temp, which all homebrew shares. /data is
+-   not always mounted. */
 +/* Whether path is a folder. */
 +static int PS4_IsFolder(const char *path)
 +{
@@ -63,13 +70,12 @@ index 2732760..3da747d 100644
 +    return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
 +}
 +
- /* The XDG base directories are in the title's temporary data when it can be
--   mounted, otherwise in common_temp, which all homebrew shares. /data is
--   not always mounted. */
-+   mounted (a game application), otherwise in its download data when it has
-+   any (an application whose param.sfo has a DOWNLOAD_DATA_SIZE, which the
-+   system mounts as /download0 for a non-game application too), otherwise in
-+   common_temp, which all homebrew shares. /data is not always mounted. */
++/* The XDG base directories are in the title's download data when it has any
++   (an application whose param.sfo has a DOWNLOAD_DATA_SIZE, which the system
++   mounts as /download0 for a game or non-game application alike), otherwise
++   in its temporary data when it can be mounted (a game application),
++   otherwise in common_temp, which all homebrew shares. /data is not always
++   mounted. */
  static void PS4_InitXdgDirs(void)
  {
      char dir[128];
@@ -78,11 +84,11 @@ index 2732760..3da747d 100644
      if (!sceKernelIsInSandbox()) {
 -        PS4_SetXdgDirs("/user/temp/common_temp");
 +        snprintf(dir, sizeof(dir), "/user/temp/common_temp");
++    } else if (PS4_IsFolder(PS4_DOWNLOAD_DATA_FOLDER)) {
++        snprintf(dir, sizeof(dir), "%s", PS4_DOWNLOAD_DATA_FOLDER);
      } else if (PS4_MountTempData() == 0) {
 -        PS4_SetXdgDirs(PS4_TEMP_DATA_FOLDER);
 +        snprintf(dir, sizeof(dir), "%s", PS4_TEMP_DATA_FOLDER);
-+    } else if (PS4_IsFolder(PS4_DOWNLOAD_DATA_FOLDER)) {
-+        snprintf(dir, sizeof(dir), "%s", PS4_DOWNLOAD_DATA_FOLDER);
      } else {
          snprintf(dir, sizeof(dir), "/%s/common_temp", sceKernelGetFsSandboxRandomWord());
 -        PS4_SetXdgDirs(dir);
@@ -94,6 +100,3 @@ index 2732760..3da747d 100644
  }
  
  /* Goes back to the home screen, however the program exits. It is registered
--- 
-2.43.0
-
