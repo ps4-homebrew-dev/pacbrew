@@ -10,7 +10,8 @@ source=("https://github.com/mpv-player/mpv/archive/refs/tags/v$pkgver.tar.gz")
 sha256sums=('ee21092a5ee427353392360929dc64645c54479aefdb5babc5cfbb5fad626209')
 groups=('ps4-homebrew-dev')
 makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-mesa'
-	    'ps4-homebrew-sdl2' 'ps4-homebrew-sdl2_image' 'ps4-homebrew-ffmpeg')
+	    'ps4-homebrew-sdl2' 'ps4-homebrew-sdl2_image' 'ps4-homebrew-ffmpeg'
+	    'ps4-homebrew-libplacebo')
 #TODO: complete makedepends
 
 prepare() {
