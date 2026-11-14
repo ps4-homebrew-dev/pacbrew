@@ -1,22 +1,27 @@
 pkgname=ps4-homebrew-libplacebo
 pkgver=7.360.1
-pkgrel=1
+pkgrel=2
 pkgdesc='Reusable library for GPU-accelerated video/image rendering primitives'
 url='https://github.com/haasn/libplacebo'
 arch=('any')
 license=('LGPL-2.1-or-later')
 options=(!strip !libtool staticlibs)
-source=(https://code.videolan.org/videolan/libplacebo/-/archive/v${pkgver}/libplacebo-v${pkgver}.tar.gz)
-sha256sums=('14c0a99f4b01557ec9826ce6b1d52f6de21be274ba03fd5aab7307f18766dc39')
+source=(https://code.videolan.org/videolan/libplacebo/-/archive/v${pkgver}/libplacebo-v${pkgver}.tar.gz
+	0001-glsl-find-the-glslang-libraries-in-vulkan-sdk.patch)
+sha256sums=('14c0a99f4b01557ec9826ce6b1d52f6de21be274ba03fd5aab7307f18766dc39'
+	    'ab84ce4277aab56e213eecf3fadabf17a0625d8904ce91beffd811bf604651b3')
 groups=('ps4-homebrew-dev')
 makedepends=('ps4-homebrew-sdk' 'ps4-homebrew-libcxx' 'ps4-homebrew-mesa'
+	    'ps4-homebrew-vulkan-headers' 'ps4-homebrew-glslang'
 	    'ps4-homebrew-sdl2' 'ps4-homebrew-sdl2_image')
-#TODO: complete makedepends
 
 prepare() {
     if [ -z "${PS4_HOMEBREW_SDK}" ]; then
 	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
     fi
+
+    cd libplacebo-v${pkgver}
+    patch -Np1 -i "${srcdir}/0001-glsl-find-the-glslang-libraries-in-vulkan-sdk.patch"
 }
 
 build() {
@@ -24,7 +29,14 @@ build() {
     cd libplacebo-v${pkgver}
 
     ${MESON} setup builddir \
-	     -Ddemos=false
+	     -Ddemos=false \
+	     -Dtests=false \
+	     -Dvulkan=enabled \
+	     -Dvk-proc-addr=enabled \
+	     -Dvulkan-registry="${SYSROOT}/${PREFIX}/share/vulkan/registry/vk.xml" \
+	     -Dglslang=enabled \
+	     -Dshaderc=disabled \
+	     -Dvulkan-sdk="${SYSROOT}/${PREFIX}"
     ${MESON} compile -C builddir
 }
 
@@ -33,6 +45,6 @@ package() {
     cd libplacebo-v${pkgver}
 
     ${MESON} install -C builddir --destdir "${pkgdir}/${SYSROOT}"
-    echo "Libs.private: -lc++" >> \
+    echo "Libs.private: -lc++ -lc++abi -lunwind" >> \
 	 "${pkgdir}/${SYSROOT}/${PREFIX}/libdata/pkgconfig/libplacebo.pc"
 }

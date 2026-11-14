@@ -1,0 +1,34 @@
+From: John Törnblom <john.tornblom@gmail.com>
+Subject: [PATCH] glsl: find the glslang libraries in -Dvulkan-sdk
+
+Only SPIRV and the static helper libraries were looked up in
+<vulkan-sdk>/lib; glslang and glslang-default-resource-limits were looked
+up in the compiler's search directories only. When those don't include the
+directory glslang is installed in (the PS4 toolchain reports only
+<sysroot>/lib, not <sysroot>/usr/lib), SPIRV is found but glslang is
+silently left out, and the final link fails.
+
+---
+diff --git a/src/glsl/meson.build b/src/glsl/meson.build
+index c9a8542..26f2c33 100644
+--- a/src/glsl/meson.build
++++ b/src/glsl/meson.build
+@@ -30,7 +30,8 @@ if glslang_req.auto() and shaderc.found()
+ elif not glslang_req.disabled()
+ 
+   glslang_deps = [
+-    cxx.find_library('glslang-default-resource-limits', required: false)
++    cxx.find_library('glslang-default-resource-limits', required: false,
++                     dirs: get_option('vulkan-sdk') != '' ? [get_option('vulkan-sdk') / 'lib'] : [])
+   ]
+ 
+   # meson doesn't respect generator expressions in INTERFACE_LINK_LIBRARIES
+@@ -59,7 +60,7 @@ elif not glslang_req.disabled()
+ 
+     # Glslang 15.0.0 moved some code around, add also linking to glslang, while
+     # this is not needed for older versions, it will still work.
+-    glslang_deps += cxx.find_library('glslang', required: required, static: static)
++    glslang_deps += cxx.find_library('glslang', required: required, static: static, dirs: vulkan_lib_dirs)
+ 
+     if static
+       glslang_deps += [
