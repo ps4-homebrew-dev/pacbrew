@@ -1,0 +1,45 @@
+pkgname=ps4-homebrew-physfs
+pkgver=3.2.0
+pkgrel=1
+pkgdesc='Portable and flexible I/O abstraction for archives'
+arch=('any')
+url='https://icculus.org/physfs'
+license=('zlib')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/icculus/physfs/archive/refs/tags/release-$pkgver.tar.gz"
+	'0001-ps4-the-base-user-and-preference-directories.patch')
+sha256sums=('1991500eaeb8d5325e3a8361847ff3bf8e03ec89252b7915e1f25b3f8ab5d560'
+	    '77dca3e6141db52e92b7567fddcd0ecaaff81e99d36ca2cc8600d0e8096ef913')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+
+    cd physfs-release-$pkgver
+    patch -Np1 -i "${srcdir}/0001-ps4-the-base-user-and-preference-directories.patch"
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd physfs-release-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DCMAKE_POLICY_VERSION_MINIMUM=3.5 \
+	     -DPHYSFS_BUILD_DOCS=NO \
+	     -DPHYSFS_BUILD_SHARED=NO \
+	     -DPHYSFS_BUILD_TEST=NO \
+	     -B build \
+             -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd physfs-release-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

@@ -1,0 +1,165 @@
+From 0000000000000000000000000000000000000000 Mon Sep 17 00:00:00 2001
+From: =?UTF-8?q?John=20T=C3=B6rnblom?= <john.tornblom@gmail.com>
+Date: Sat, 14 Nov 2026 00:00:00 +0000
+Subject: [PATCH] ps4: the base, user and preference directories on the PS4
+
+PHYSFS_PLATFORM_PS4 is defined for the ps4-homebrew-dev SDK's compiler
+(__ORBIS__), on top of the FreeBSD platform it already gets.
+
+The base directory is found as SDL_GetBasePath() finds it on the PS4,
+so a program using both gets the same folder from each: the folder of
+argv[0] when it has one (an ELF started from a file), otherwise the
+package's /app0/, otherwise the current folder. KERN_PROC_PATHNAME is
+not asked: the PS5 doesn't allow it for PS4 apps.
+
+The user directory, without which PHYSFS_init() fails, is $HOME when it
+is set. It isn't, and there are no users in the password database, so
+otherwise it is the folder SDL2main keeps the XDG base directories in
+(the parent of $XDG_DATA_HOME), otherwise /download0 when it is there.
+
+The preference directory stays in $XDG_DATA_HOME, which SDL2main sets up
+in the title's download data (/download0) when it has any. A program
+without SDL2main gets /download0 itself when it is there.
+
+Co-Authored-By: Claude Opus 5.5 <noreply@anthropic.com>
+Claude-Session: https://claude.ai/code/session_01EVpxQigy3XP2NA2AV9HzpW
+---
+ src/physfs_platform_posix.c | 39 +++++++++++++++++++++++++++++
+ src/physfs_platform_unix.c  | 49 ++++++++++++++++++++++++++++++++++++-
+ src/physfs_platforms.h      |  3 +++
+ 3 files changed, 90 insertions(+), 1 deletion(-)
+
+diff --git a/src/physfs_platform_posix.c b/src/physfs_platform_posix.c
+index 7ba5e10..4a4090b 100644
+--- a/src/physfs_platform_posix.c
++++ b/src/physfs_platform_posix.c
+@@ -112,6 +112,45 @@ char *__PHYSFS_platformCalcUserDir(void)
+     if (retval == NULL)
+         retval = getUserDirByUID();
+ 
++    #if defined(PHYSFS_PLATFORM_PS4)
++    /* There are no users in the password database, and $HOME is not set:
++     *  the user directory is the folder SDL2main keeps the XDG base
++     *  directories in (the parent of $XDG_DATA_HOME), otherwise the title's
++     *  download data (/download0) when it is there. PHYSFS_init() fails
++     *  without one.
++     */
++    if (retval == NULL)
++    {
++        struct stat statbuf;
++        const char *dir = NULL;
++        size_t len = 0;
++
++        envr = getenv("XDG_DATA_HOME");
++        if ((envr != NULL) && (*envr == '/'))
++        {
++            len = strlen(envr);
++            while ((len > 1) && (envr[len - 1] == '/'))
++                len--;  /* trailing slashes. */
++            while ((len > 1) && (envr[len - 1] != '/'))
++                len--;  /* last path component, keeping its slash. */
++            dir = envr;
++        } /* if */
++        else if ((stat("/download0", &statbuf) != -1) && S_ISDIR(statbuf.st_mode))
++        {
++            dir = "/download0/";
++            len = strlen(dir);
++        } /* else if */
++
++        if (dir != NULL)
++        {
++            retval = (char *) allocator.Malloc(len + 1);
++            BAIL_IF(!retval, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
++            memcpy(retval, dir, len);
++            retval[len] = '\0';
++        } /* if */
++    } /* if */
++    #endif
++
+     return retval;
+ } /* __PHYSFS_platformCalcUserDir */
+ 
+diff --git a/src/physfs_platform_unix.c b/src/physfs_platform_unix.c
+index 10d93a7..5c9a1ee 100644
+--- a/src/physfs_platform_unix.c
++++ b/src/physfs_platform_unix.c
+@@ -253,7 +253,41 @@ char *__PHYSFS_platformCalcBaseDir(const char *argv0)
+ 
+     /* Try to avoid using argv0 unless forced to. Try system-specific stuff. */
+ 
+-    #if defined(PHYSFS_PLATFORM_FREEBSD)
++    #if defined(PHYSFS_PLATFORM_PS4)
++    {
++        /* As SDL_GetBasePath() does on the PS4, so that a program using both
++         *  gets the same folder from each: the folder of argv[0] when it has
++         *  one (an ELF started from a file), otherwise the package's /app0/,
++         *  otherwise the current folder.
++         */
++        char dirname[PATH_MAX];
++        struct stat st;
++
++        if ((argv0 != NULL) && (strchr(argv0, '/') != NULL))
++        {
++            if (argv0[0] == '/')
++                retval = __PHYSFS_strdup(argv0);
++            else if (getcwd(dirname, sizeof (dirname)) != NULL)
++            {
++                const size_t len = strlen(dirname) + strlen(argv0) + 2;
++                retval = (char *) allocator.Malloc(len);
++                BAIL_IF(!retval, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
++                snprintf(retval, len, "%s/%s", dirname, argv0);
++            } /* else if */
++        } /* if */
++        else if ((stat("/app0/", &st) == 0) && S_ISDIR(st.st_mode))
++            return __PHYSFS_strdup("/app0/");
++        else if (getcwd(dirname, sizeof (dirname)) != NULL)
++        {
++            const size_t len = strlen(dirname) + 2;
++            retval = (char *) allocator.Malloc(len);
++            BAIL_IF(!retval, PHYSFS_ERR_OUT_OF_MEMORY, NULL);
++            snprintf(retval, len, "%s%s", dirname,
++                     (len > 2 && dirname[len - 3] == '/') ? "" : "/");
++            return retval;
++        } /* else if */
++    }
++    #elif defined(PHYSFS_PLATFORM_FREEBSD)
+     {
+         char fullpath[PATH_MAX];
+         size_t buflen = sizeof (fullpath);
+@@ -346,6 +380,19 @@ char *__PHYSFS_platformCalcPrefDir(const char *org, const char *app)
+     char *retval = NULL;
+     size_t len = 0;
+ 
++    #if defined(PHYSFS_PLATFORM_PS4)
++    /* SDL2main sets $XDG_DATA_HOME up before main(), in the title's download
++     *  data (/download0) when it has any. A program without SDL2main gets
++     *  /download0 itself, when it is there. /data is not always mounted.
++     */
++    if (!envr)
++    {
++        struct stat st;
++        if ((stat("/download0", &st) == 0) && S_ISDIR(st.st_mode))
++            envr = "/download0";
++    } /* if */
++    #endif
++
+     if (!envr)
+     {
+         /* You end up with "$HOME/.local/share/Game Name 2" */
+diff --git a/src/physfs_platforms.h b/src/physfs_platforms.h
+index 1ac17d9..17cc3d5 100644
+--- a/src/physfs_platforms.h
++++ b/src/physfs_platforms.h
+@@ -54,6 +54,9 @@
+ #  define PHYSFS_PLATFORM_UNIX 1
+ #  define PHYSFS_PLATFORM_POSIX 1
+ #elif defined(__FreeBSD__) || defined(__FreeBSD_kernel__) || defined(__DragonFly__)
++#  if defined(__ORBIS__)
++#    define PHYSFS_PLATFORM_PS4 1
++#  endif
+ #  define PHYSFS_PLATFORM_FREEBSD 1
+ #  define PHYSFS_PLATFORM_BSD 1
+ #  define PHYSFS_PLATFORM_UNIX 1
+-- 
+2.43.0
+
