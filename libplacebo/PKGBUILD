@@ -31,8 +31,8 @@ build() {
     ${MESON} setup builddir \
 	     -Ddemos=false \
 	     -Dtests=false \
-	     -Dvulkan=enabled \
-	     -Dvk-proc-addr=enabled \
+	     -Dvulkan=disabled \
+	     -Dvk-proc-addr=disabled \
 	     -Dvulkan-registry="${SYSROOT}/${PREFIX}/share/vulkan/registry/vk.xml" \
 	     -Dglslang=enabled \
 	     -Dshaderc=disabled \
