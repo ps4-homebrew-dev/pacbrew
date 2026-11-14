@@ -1,0 +1,45 @@
+pkgname=ps4-homebrew-glslang
+pkgver=16.6.0
+pkgrel=1
+pkgdesc='Khronos reference front-end for GLSL/ESSL and GLSL to SPIR-V compiler'
+arch=('any')
+url='https://github.com/KhronosGroup/glslang'
+license=('BSD-3-Clause AND BSD-2-Clause AND MIT AND Apache-2.0 AND GPL-3.0-or-later WITH Bison-exception-2.2')
+options=(!strip !libtool staticlibs)
+source=("https://github.com/KhronosGroup/glslang/archive/refs/tags/$pkgver.tar.gz")
+sha256sums=('9c09b901149c729df745057dafa815278aaa101b84d2b6e14f16a42de52f97f2')
+groups=('ps4-homebrew-dev')
+makedepends=('ps4-homebrew-sdk')
+depends=('ps4-homebrew-libcxx')
+
+prepare() {
+    if [ -z "${PS4_HOMEBREW_SDK}" ]; then
+	export PS4_HOMEBREW_SDK=/opt/ps4-homebrew-sdk
+    fi
+}
+
+build() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd glslang-$pkgver
+
+    ${CMAKE} -DCMAKE_BUILD_TYPE=Release \
+	     -DBUILD_SHARED_LIBS=OFF \
+	     -DBUILD_EXTERNAL=OFF \
+	     -DENABLE_OPT=OFF \
+	     -DENABLE_HLSL=OFF \
+	     -DENABLE_PCH=OFF \
+	     -DENABLE_GLSLANG_BINARIES=OFF \
+	     -DGLSLANG_TESTS=OFF \
+	     -DGLSLANG_ENABLE_INSTALL=ON \
+	     -B build \
+	     -S .
+    ${MAKE} -C build
+}
+
+package() {
+    source "${PS4_HOMEBREW_SDK}/toolchain/orbis.sh"
+    cd glslang-$pkgver
+
+    export DESTDIR="${pkgdir}/${SYSROOT}"
+    ${MAKE} -C build install
+}

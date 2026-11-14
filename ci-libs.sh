@@ -11,8 +11,8 @@ PKGS=(sdk openlibm zlib libcxx openmp bzip2 dht enet expat faad2
       libtheora libutp libvorbis libyuv lz4 miniupnpc mpg123 dav1d
       json-c libevent libjpeg-turbo libquickjs libvpx libwebp luajit
       openssl curl libssh libssh2 opus libsndfile sqlite tinyxml2 xz
-      libxml2 yaml-cpp zstd libarchive libzip mesa glu glew vulkan-headers ffmpeg
-      SDL2 SDL2_ttf SDL2_net SDL2_mixer SDL2_image SDL2_gfx SDL2_kitchensink
+      libxml2 yaml-cpp zstd libarchive libzip glslang mesa glu glew vulkan-headers
+      ffmpeg SDL2 SDL2_ttf SDL2_net SDL2_mixer SDL2_image SDL2_gfx SDL2_kitchensink
       openal rmlui libplacebo mpv )
 
 sudo pacman --noconfirm --remove ps4-homebrew-dev
